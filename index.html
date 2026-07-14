@@ -1,0 +1,2100 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<title>Přežij Noc</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0d0d12; color: #eee;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 12px;
+  }
+  h1 { margin: 8px 0; font-size: 22px; color: #ff5555; text-shadow: 0 0 8px #660000; }
+  #wrap { position: relative; width: 100%; max-width: 1400px; }
+  canvas {
+    background: #1a2e1a; border: 3px solid #444; border-radius: 6px;
+    display: block; touch-action: none; width: 100%; height: auto;
+  }
+  #hud { display: flex; gap: 10px; margin: 8px 0; font-size: 13px; flex-wrap: wrap; justify-content: center; }
+  #hud span { background: #1c1c24; padding: 4px 10px; border-radius: 6px; border: 1px solid #333; }
+  #log {
+    width: 100%; max-width: 1400px; background: #14141c; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; color: #aac;
+    max-height: 84px; overflow-y: auto; margin-top: 6px;
+  }
+  #log div { padding: 1px 0; }
+  #log .story { color: #ffd54f; }
+  #log .warn { color: #ff8a80; }
+  #modal {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(10,10,16,0.95); padding: 22px 30px; border-radius: 10px;
+    text-align: center; display: none; border: 2px solid #d4af37; max-width: 480px; z-index: 5;
+  }
+  #modal h3 { margin: 0 0 10px 0; color: #ffd54f; }
+  #modal p { font-size: 14px; line-height: 1.5; white-space: pre-line; }
+  #modal button {
+    margin: 8px 6px 0 6px; padding: 8px 18px; background: #d4af37; border: none;
+    border-radius: 6px; color: #1a1a1a; font-weight: bold; cursor: pointer;
+  }
+  #controls { margin-top: 8px; font-size: 12px; color: #999; text-align: center; max-width: 800px; }
+  #mobileBtns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
+  #mobileBtns button { padding: 10px 16px; background: #333; color: #fff; border: 1px solid #555; border-radius: 6px; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>🌙 PŘEŽIJ NOC 🌙</h1>
+<div id="hud">
+  <span>❤️ <b id="hp">100</b></span>
+  <span>🎒 <b id="carry">0d/0k</b></span>
+  <span>🏰 Sklad: <b id="stock">0d/0k</b></span>
+  <span>👑 <b id="queenhp">100</b></span>
+  <span>🛡️ <b id="guardhp">100/100</b></span>
+  <span>⚔️ Armáda: <b id="armycount">0</b></span>
+  <span>🚪 <b id="gatestate">zavřená</b></span>
+  <span>📅 Den <b id="daynum">1</b></span>
+  <span>☀️/🌙 <b id="phase">Den</b></span>
+  <span>⏱️ <b id="timer">0</b>s</span>
+  <span>🌦️ <b id="weatherlbl">jasno</b></span>
+</div>
+<div id="wrap">
+  <canvas id="game" width="2800" height="1800"></canvas>
+  <div id="modal">
+    <h3 id="modalTitle"></h3>
+    <p id="modalText"></p>
+    <div id="modalBtns"></div>
+  </div>
+</div>
+<div id="log"></div>
+<div id="controls">
+  Pohyb: šipky/WASD | Sběr: <b>E</b> | Útok: <b>Mezerník</b> | Najmout zbrojnoše ve vesnici: <b>N</b> (8 dřeva + 8 kamene ze skladu) |
+  Uvnitř hradu se všichni pomalu léčí | Královna a zbrojnoši sbírají, opravují zdi a večer se vrací k ohni
+</div>
+<div id="mobileBtns">
+  <button ontouchstart="keys['ArrowUp']=true" ontouchend="keys['ArrowUp']=false">▲</button>
+  <button ontouchstart="keys['ArrowDown']=true" ontouchend="keys['ArrowDown']=false">▼</button>
+  <button ontouchstart="keys['ArrowLeft']=true" ontouchend="keys['ArrowLeft']=false">◀</button>
+  <button ontouchstart="keys['ArrowRight']=true" ontouchend="keys['ArrowRight']=false">▶</button>
+  <button ontouchstart="doGather()">E sbírat</button>
+  <button ontouchstart="doAttack()">⚔ útok</button>
+  <button ontouchstart="tryHire()">N najmout</button>
+  <button id="musicBtn" onclick="toggleMusic()">🔊 Hudba</button>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const CASTLE = { x: W/2, y: H/2 };
+const HALF = 170, GATE_W = 150, KEEP_RADIUS = 36;
+const CAMPFIRE = { x: CASTLE.x + 55, y: CASTLE.y + 30 };
+
+let keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === 'e' || e.key === 'E') doGather();
+  if (e.key === ' ') { doAttack(); e.preventDefault(); }
+  if (e.key === 'n' || e.key === 'N') tryHire();
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+let player, queen, guards, army, resources, enemies, wolves, wallDefs, towerDefs, projectiles;
+let waters, mountains, paths, streams, bridges, villages, tunnels;
+let dayLength, nightLength, cycleTimer, phase, wave, gameOver, elapsed, facing;
+let castleWood, castleStone, resourceTimer, fireTime, gateOpen, gateOpenTimer;
+let dayNumber, dayStats, storyFlags, weather, gamePaused, eventTimer, hireHintShown;
+
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function closestPointOnSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx*dx + dy*dy || 1;
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { x: cx, y: cy, dist: Math.hypot(px - cx, py - cy) };
+}
+function pointInPolygon(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    const inter = ((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 1e-9) + xi);
+    if (inter) inside = !inside;
+  }
+  return inside;
+}
+function segmentIntersection(p1, p2, p3, p4) {
+  const d1x = p2.x-p1.x, d1y = p2.y-p1.y, d2x = p4.x-p3.x, d2y = p4.y-p3.y;
+  const denom = d1x*d2y - d1y*d2x;
+  if (Math.abs(denom) < 1e-9) return null;
+  const t = ((p3.x-p1.x)*d2y - (p3.y-p1.y)*d2x) / denom;
+  const u = ((p3.x-p1.x)*d1y - (p3.y-p1.y)*d1x) / denom;
+  if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return { x: p1.x + t*d1x, y: p1.y + t*d1y };
+  return null;
+}
+function polygonSegmentIntersections(poly, p1, p2) {
+  const res = [];
+  for (let i = 0; i < poly.length; i++) {
+    const ip = segmentIntersection(p1, p2, poly[i], poly[(i+1)%poly.length]);
+    if (ip) res.push(ip);
+  }
+  return res;
+}
+
+const ENEMY_TYPES = {
+  bat:     { name:'Netopýr',  baseSpeed:1.4, baseHp:14,  size:10, erratic:true },
+  zombie:  { name:'Zombie',   baseSpeed:0.28,baseHp:55,  size:15, erratic:false },
+  skeleton:{ name:'Kostlivec',baseSpeed:0.65,baseHp:30,  size:13, erratic:false },
+  witch:   { name:'Čarodějka',baseSpeed:0.55,baseHp:25,  size:13, erratic:true, wallDamage:3 },
+  knight:  { name:'Rytíř',    baseSpeed:0.24,baseHp:90,  size:16, erratic:false },
+  hydra:   { name:'Hydra',    baseSpeed:0.16,baseHp:420, size:30, erratic:false, wallDamage:7 }
+};
+
+// ---------- Zprávy / příběh ----------
+function logMsg(text, cls) {
+  const log = document.getElementById('log');
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = `[Den ${dayNumber}] ${text}`;
+  log.insertBefore(d, log.firstChild);
+  while (log.children.length > 40) log.removeChild(log.lastChild);
+}
+function showModal(title, text, buttons) {
+  gamePaused = true;
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalText').textContent = text;
+  const btns = document.getElementById('modalBtns');
+  btns.innerHTML = '';
+  for (const b of buttons) {
+    const el = document.createElement('button');
+    el.textContent = b.label;
+    el.onclick = () => { document.getElementById('modal').style.display = 'none'; gamePaused = false; if (b.cb) b.cb(); };
+    btns.appendChild(el);
+  }
+  document.getElementById('modal').style.display = 'block';
+}
+
+// ---------- Terén ----------
+function farEnough(x, y, list, minGap) {
+  for (const o of list) { if (dist({x,y}, o) < ((o.rApprox||0) + minGap)) return false; }
+  return true;
+}
+function makeLakeShape(cx, cy, baseR) {
+  const n = Math.floor(rand(10, 16)), pts = [];
+  for (let i = 0; i < n; i++) {
+    const ang = (i/n) * Math.PI*2;
+    const r = baseR * (1 + 0.22*Math.sin(ang*3 + cx*0.01) + rand(-0.1, 0.1));
+    pts.push({ x: cx + Math.cos(ang)*r, y: cy + Math.sin(ang)*r*0.82 });
+  }
+  return pts;
+}
+function makeWaters() {
+  waters = [];
+  let tries = 0;
+  while (waters.length < 7 && tries < 500) {
+    tries++;
+    const x = rand(150, W-150), y = rand(150, H-150);
+    if (dist({x,y}, CASTLE) < 550) continue;
+    const baseR = rand(75, 170);
+    if (farEnough(x, y, waters, baseR+40)) waters.push({ x, y, rApprox: baseR, points: makeLakeShape(x, y, baseR) });
+  }
+}
+function makeMountain(cx, cy, baseR) {
+  const n = Math.floor(rand(9, 13)), pts = [];
+  for (let i = 0; i < n; i++) {
+    const ang = (i/n) * Math.PI*2;
+    const r = baseR * rand(0.72, 1.3);
+    pts.push({ x: cx + Math.cos(ang)*r, y: cy + Math.sin(ang)*r*0.8 });
+  }
+  const peaks = [];
+  const pc = Math.floor(rand(2, 4));
+  for (let i = 0; i < pc; i++) {
+    peaks.push({ dx: rand(-baseR*0.35, baseR*0.35), dy: rand(-baseR*0.1, baseR*0.15),
+      height: rand(baseR*0.9, baseR*1.6), width: rand(baseR*0.55, baseR*0.95), snow: Math.random() < 0.75 });
+  }
+  peaks.sort((a,b) => a.dy - b.dy);
+  return { x: cx, y: cy, rApprox: baseR, points: pts, peaks, hue: rand(-14, 20) };
+}
+function makeMountains() {
+  mountains = [];
+  let tries = 0;
+  while (mountains.length < 11 && tries < 700) {
+    tries++;
+    const x = rand(120, W-120), y = rand(120, H-120);
+    if (dist({x,y}, CASTLE) < 520) continue;
+    const baseR = rand(95, 210);
+    if (farEnough(x, y, mountains, baseR+55) && farEnough(x, y, waters, baseR+40)) mountains.push(makeMountain(x, y, baseR));
+  }
+}
+function makePaths() {
+  paths = [];
+  const dirs = [0, Math.PI/2, Math.PI, Math.PI*1.5, Math.PI/4, -Math.PI/4];
+  for (const baseAng of dirs) {
+    const pts = [{ x: CASTLE.x, y: CASTLE.y }];
+    let ang = baseAng, cx = CASTLE.x, cy = CASTLE.y;
+    for (let i = 0; i < 14; i++) {
+      ang += rand(-0.35, 0.35);
+      cx += Math.cos(ang)*140; cy += Math.sin(ang)*140;
+      pts.push({ x: cx, y: cy });
+      if (cx < -50 || cx > W+50 || cy < -50 || cy > H+50) break;
+    }
+    paths.push(pts);
+  }
+}
+function makeTunnels() {
+  tunnels = [];
+  for (const m of mountains) {
+    for (const p of paths) {
+      let allInts = [];
+      for (let i = 0; i < p.length - 1; i++) {
+        for (const ip of polygonSegmentIntersections(m.points, p[i], p[i+1])) allInts.push(ip);
+      }
+      if (allInts.length >= 2) {
+        const a = allInts[0], b = allInts[allInts.length-1];
+        if (dist(a, b) > 10) tunnels.push({ ax:a.x, ay:a.y, bx:b.x, by:b.y, width: 50 });
+      }
+    }
+  }
+}
+function inTunnel(x, y) {
+  for (const t of tunnels) {
+    if (closestPointOnSegment(x, y, t.ax, t.ay, t.bx, t.by).dist < t.width/2) return true;
+  }
+  return false;
+}
+function pathClearOfEntrance(pts) {
+  for (const p of pts) {
+    if (dist(p, CASTLE) < 420) return false;
+    if (p.x > CASTLE.x-260 && p.x < CASTLE.x+260 && p.y > CASTLE.y && p.y < CASTLE.y+620) return false;
+  }
+  return true;
+}
+function makeStreams() {
+  streams = []; bridges = [];
+  let attempt = 0, pts = null, width = 32;
+  while (attempt < 60) {
+    attempt++;
+    const start = { x: rand(100, W-100), y: rand(100, H-100) };
+    const end = { x: rand(100, W-100), y: rand(100, H-100) };
+    if (dist(start, end) < W*0.35) continue;
+    const cand = [start];
+    for (let s = 1; s < 10; s++) {
+      const t = s/10;
+      cand.push({ x: start.x + (end.x-start.x)*t + rand(-90,90), y: start.y + (end.y-start.y)*t + rand(-90,90) });
+    }
+    cand.push(end);
+    width = rand(28, 38);
+    if (pathClearOfEntrance(cand)) { pts = cand; break; }
+  }
+  if (!pts) return;
+  streams.push({ points: pts, width });
+  let bp = null, ba = 0;
+  outer:
+  for (const p of paths) {
+    for (let i = 0; i < p.length-1; i++) {
+      for (let j = 0; j < pts.length-1; j++) {
+        const ip = segmentIntersection(p[i], p[i+1], pts[j], pts[j+1]);
+        if (ip) { bp = ip; ba = Math.atan2(pts[j+1].y-pts[j].y, pts[j+1].x-pts[j].x); break outer; }
+      }
+    }
+  }
+  if (!bp) {
+    const idx = Math.floor(pts.length/2);
+    bp = pts[idx];
+    ba = Math.atan2(pts[idx+1].y-pts[idx-1].y, pts[idx+1].x-pts[idx-1].x);
+  }
+  bridges.push({ x: bp.x, y: bp.y, angle: ba, span: width + 46 });
+}
+function onBridge(x, y) { for (const b of bridges) if (dist({x,y}, b) < 50) return true; return false; }
+function inStreamRaw(x, y) {
+  for (const s of streams) {
+    for (let i = 0; i < s.points.length-1; i++) {
+      if (closestPointOnSegment(x, y, s.points[i].x, s.points[i].y, s.points[i+1].x, s.points[i+1].y).dist < s.width/2) return true;
+    }
+  }
+  return false;
+}
+function blockedByStream(x, y) { return inStreamRaw(x, y) && !onBridge(x, y); }
+function inWater(x, y) { for (const w of waters) if (pointInPolygon(x, y, w.points)) return true; return false; }
+function inMountainRaw(x, y) { for (const m of mountains) if (pointInPolygon(x, y, m.points)) return true; return false; }
+function inMountain(x, y) { return inMountainRaw(x, y) && !inTunnel(x, y); }
+
+// ---------- Doly ----------
+function makeMines() {
+  const mines = [];
+  for (const m of mountains) {
+    if (Math.random() > 0.6) continue;
+    for (let i = 0; i < 20; i++) {
+      const ang = rand(0, Math.PI*2);
+      const x = m.x + Math.cos(ang)*(m.rApprox+18);
+      const y = m.y + Math.sin(ang)*(m.rApprox+18)*0.8;
+      if (!inMountain(x, y) && !inWater(x, y) && dist({x,y}, CASTLE) > 300) {
+        mines.push({ x, y, type:'mine', amount: Infinity, angle: ang, growth: 1 });
+        break;
+      }
+    }
+  }
+  return mines;
+}
+
+// ---------- Vlci ----------
+function makeWolfPacks() {
+  wolves = [];
+  const corners = [ {x:220,y:220}, {x:W-220,y:220}, {x:220,y:H-220}, {x:W-220,y:H-220} ];
+  for (const c of corners) {
+    let den = { x: c.x, y: c.y }, tries = 0;
+    while ((inWater(den.x, den.y) || inMountainRaw(den.x, den.y)) && tries < 60) {
+      den = { x: c.x + rand(-120,120), y: c.y + rand(-120,120) }; tries++;
+    }
+    const ps = Math.floor(rand(4, 6));
+    for (let i = 0; i < ps; i++) {
+      wolves.push({ x: den.x+rand(-40,40), y: den.y+rand(-40,40), den, size:13, speed:1.0,
+        hp:45, maxHp:45, wanderAngle:rand(0,Math.PI*2), wanderTimer:rand(1,4), attackCooldown:0, legPhase:rand(0,Math.PI*2) });
+    }
+  }
+}
+function huntTargets() {
+  const list = [player];
+  if (queen.alive && !queen.sheltering) list.push(queen);
+  for (const g of guards) if (g.alive && !g.sheltering) list.push(g);
+  for (const s of army) list.push(s);
+  for (const v of villages) {
+    for (const d of v.defenders) if (d.hp > 0) list.push(d);
+    if (v.dog.hp > 0) list.push(v.dog);
+  }
+  return list;
+}
+function updateWolf(wf, dt) {
+  if (wf.hp <= 0) return;
+  if (wf.attackCooldown > 0) wf.attackCooldown--;
+  wf.legPhase += dt*8;
+  let closest = null, closestD = 230;
+  for (const c of huntTargets()) { const d = dist(wf, c); if (d < closestD) { closestD = d; closest = c; } }
+  if (closest) {
+    if (closestD > 28) moveEntityToward(wf, closest.x, closest.y);
+    else if (wf.attackCooldown <= 0) { closest.hp = Math.max(0, closest.hp - 6); wf.attackCooldown = 30; }
+  } else {
+    wf.wanderTimer -= dt;
+    if (wf.wanderTimer <= 0) { wf.wanderAngle = rand(0, Math.PI*2); wf.wanderTimer = rand(2,5); }
+    const nx = wf.x + Math.cos(wf.wanderAngle)*wf.speed*0.4;
+    const ny = wf.y + Math.sin(wf.wanderAngle)*wf.speed*0.4;
+    if (dist({x:nx,y:ny}, wf.den) < 220 && !isBlocked(nx, ny, wf.size)) { wf.x = nx; wf.y = ny; }
+    else wf.wanderAngle += Math.PI;
+  }
+}
+function updateWolves(dt) {
+  for (const wf of wolves) updateWolf(wf, dt);
+  const before = wolves.length;
+  wolves = wolves.filter(w => w.hp > 0);
+  dayStats.wolfKills += before - wolves.length;
+}
+
+// ---------- Vesnice ----------
+function makeChicken(v) { return { type:'chicken', x:v.x+rand(-40,40), y:v.y+rand(-40,40), angle:rand(0,Math.PI*2), timer:rand(0,3), hp:12, maxHp:12, size:7, legPhase:rand(0,6) }; }
+function makeCowAnimal(v) { return { type:'cow', x:v.x+rand(-40,40), y:v.y+rand(-40,40), angle:rand(0,Math.PI*2), timer:rand(0,3), hp:25, maxHp:25, size:14, legPhase:rand(0,6) }; }
+function makePerson(v, px, py) {
+  const colors = [ ['#7a5a3a','#4a3a2a'], ['#5a6b3a','#3a2a1a'], ['#8a4a3a','#3a3a4a'], ['#4a5a7a','#2a2a3a'] ];
+  const c = colors[Math.floor(rand(0,colors.length))];
+  return { x: px !== undefined ? px : v.x+rand(-40,40), y: py !== undefined ? py : v.y+rand(-40,40),
+    angle:rand(0,Math.PI*2), timer:rand(0,3), shirt:c[0], pants:c[1], hp:20, maxHp:20, size:14 };
+}
+function makeChild(v) {
+  const p = makePerson(v);
+  p.size = 8; p.hp = 10; p.maxHp = 10; p.age = 0;
+  return p;
+}
+function makeDefender(v, kind) {
+  return { x:v.x+rand(-30,30), y:v.y+rand(-30,30), size:15, speed:0.85, hp:90, maxHp:90, attackCooldown:0, kind };
+}
+function makeVillages() {
+  villages = [];
+  let tries = 0;
+  while (villages.length < 3 && tries < 500) {
+    tries++;
+    const x = rand(200, W-200), y = rand(200, H-200);
+    if (dist({x,y}, CASTLE) < 650) continue;
+    if (inWater(x,y) || inMountainRaw(x,y) || inStreamRaw(x,y)) continue;
+    let bad = false;
+    for (const v of villages) if (dist({x,y}, v) < 500) bad = true;
+    for (const m of mountains) if (dist({x,y}, m) < m.rApprox+140) bad = true;
+    for (const w of waters) if (dist({x,y}, w) < w.rApprox+140) bad = true;
+    if (bad) continue;
+    const houses = [];
+    for (let i = 0; i < Math.floor(rand(3,5)); i++) {
+      const ang = rand(0, Math.PI*2), r = rand(20, 55);
+      houses.push({ dx: Math.cos(ang)*r, dy: Math.sin(ang)*r, w: rand(26,36), h: rand(22,30) });
+    }
+    const v = {
+      x, y, radius: 100, dayRadius: 340, houses,
+      animals: [], people: [], children: [], birthTimer: rand(12, 20),
+      dog: { x:x+20, y:y+20, size:9, speed:1.3, hp:40, maxHp:40, attackCooldown:0, legPhase:0 },
+      defenders: []
+    };
+    for (let i = 0; i < 4; i++) v.animals.push(makeChicken(v));
+    for (let i = 0; i < 2; i++) v.animals.push(makeCowAnimal(v));
+    for (let i = 0; i < 3; i++) v.people.push(makePerson(v));
+    v.defenders.push(makeDefender(v, 'archer'));
+    v.defenders.push(makeDefender(v, 'spear'));
+    villages.push(v);
+  }
+}
+function updateWanderer(a, v, dt, speed, homeFactor) {
+  if (phase === 'day') {
+    a.timer -= dt;
+    if (a.timer <= 0) { a.angle = rand(0, Math.PI*2); a.timer = rand(2, 6); }
+    const nx = a.x + Math.cos(a.angle)*speed, ny = a.y + Math.sin(a.angle)*speed;
+    const maxR = homeFactor ? v.radius*homeFactor : v.dayRadius;
+    if (dist({x:nx,y:ny}, v) < maxR) { a.x = nx; a.y = ny; }
+    else a.angle += Math.PI;
+  } else {
+    if (dist(a, v) > v.radius*0.55) {
+      const ex = v.x-a.x, ey = v.y-a.y, el = Math.hypot(ex,ey)||1;
+      a.x += (ex/el)*speed*1.5; a.y += (ey/el)*speed*1.5;
+    }
+    if (dist(a, v) > v.radius*0.7) {
+      for (const en of hostilesNear()) { if (dist(en, a) < 20) a.hp -= 0.25; }
+    }
+  }
+  if (a.legPhase !== undefined) a.legPhase += dt*6;
+}
+function updateVillageDefender(d, v, dt) {
+  if (d.hp <= 0) return;
+  if (d.attackCooldown > 0) d.attackCooldown--;
+  let closest = null, closestD = (d.kind === 'archer') ? 260 : 200;
+  for (const en of hostilesNear()) { const dd = dist(d, en); if (dd < closestD) { closestD = dd; closest = en; } }
+  if (closest) {
+    if (d.kind === 'archer') {
+      if (dist(d, v) > v.radius) moveEntityToward(d, v.x, v.y);
+      if (d.attackCooldown <= 0) {
+        const ex = closest.x-d.x, ey = closest.y-d.y, el = Math.hypot(ex,ey)||1;
+        projectiles.push({ x:d.x, y:d.y, vx:(ex/el)*5.5, vy:(ey/el)*5.5, dmg:14, life:80, friendly:true });
+        d.attackCooldown = 42;
+      }
+    } else {
+      if (closestD > 32) moveEntityToward(d, closest.x, closest.y);
+      else if (d.attackCooldown <= 0) { closest.hp -= 22; d.attackCooldown = 22; }
+    }
+  } else if (dist(d, v) > 85) moveEntityToward(d, v.x, v.y);
+  for (const en of hostilesNear()) { if (dist(en, d) < 20) d.hp -= 0.15; }
+}
+function updateVillageBirths(v, dt) {
+  v.birthTimer -= dt;
+  if (v.birthTimer > 0) return;
+  v.birthTimer = rand(16, 28);
+  const chick = v.animals.filter(a=>a.type==='chicken').length;
+  const cows = v.animals.filter(a=>a.type==='cow').length;
+  if (chick < 4) { v.animals.push(makeChicken(v)); dayStats.born++; }
+  else if (cows < 2) { v.animals.push(makeCowAnimal(v)); dayStats.born++; }
+  else if (v.children.length + v.people.length < 5) { v.children.push(makeChild(v)); dayStats.born++; logMsg('Ve vesnici se narodilo dítě. 👶'); }
+  else if (v.dog.hp <= 0) { v.dog.hp = v.dog.maxHp; v.dog.x = v.x; v.dog.y = v.y; }
+  else if (v.defenders.filter(d=>d.hp>0).length < 2) {
+    const kind = v.defenders.some(d=>d.hp>0 && d.kind==='archer') ? 'spear' : 'archer';
+    v.defenders.push(makeDefender(v, kind));
+    v.defenders = v.defenders.filter(d=>d.hp>0);
+    logMsg('Vesnice vycvičila nového obránce.');
+  }
+}
+function hostilesNear() { return enemies.concat(wolves); }
+function updateVillages(dt) {
+  for (const v of villages) {
+    for (const a of v.animals) updateWanderer(a, v, dt, a.type==='cow'?0.28:0.45);
+    for (const p of v.people) updateWanderer(p, v, dt, 0.35);
+    for (const c of v.children) {
+      updateWanderer(c, v, dt, 0.3, 0.6);
+      c.age += dt;
+      if (c.age > 70) {
+        v.people.push(makePerson(v, c.x, c.y));
+        c.hp = -1;
+        logMsg('Dítě ve vesnici dospělo v nového vesničana.');
+      }
+    }
+    const pplBefore = v.people.length + v.children.length;
+    const aniBefore = v.animals.length;
+    v.animals = v.animals.filter(a => a.hp > 0);
+    v.people = v.people.filter(p => p.hp > 0);
+    v.children = v.children.filter(c => c.hp > 0);
+    dayStats.villagersLost += Math.max(0, pplBefore - (v.people.length + v.children.length));
+    dayStats.animalsLost += Math.max(0, aniBefore - v.animals.length);
+    for (const d of v.defenders) updateVillageDefender(d, v, dt);
+    v.defenders = v.defenders.filter(d => d.hp > 0);
+    if (v.dog.hp > 0) {
+      if (v.dog.attackCooldown > 0) v.dog.attackCooldown--;
+      v.dog.legPhase += dt*8;
+      let closest = null, cd = 180;
+      for (const en of hostilesNear()) { const dd = dist(v.dog, en); if (dd < cd) { cd = dd; closest = en; } }
+      if (closest) {
+        if (cd > 22) moveEntityToward(v.dog, closest.x, closest.y);
+        else if (v.dog.attackCooldown <= 0) { closest.hp -= 8; v.dog.attackCooldown = 18; }
+      } else if (dist(v.dog, v) > 70) moveEntityToward(v.dog, v.x, v.y);
+      for (const en of hostilesNear()) { if (dist(en, v.dog) < 16) v.dog.hp -= 0.15; }
+    }
+    // příšery útočí i na lidi/zvířata poblíž
+    for (const en of hostilesNear()) {
+      for (const p of v.people) if (dist(en, p) < 18) p.hp -= 0.2;
+      for (const c of v.children) if (dist(en, c) < 18) c.hp -= 0.25;
+      for (const a of v.animals) if (dist(en, a) < 18) a.hp -= 0.2;
+    }
+    updateVillageBirths(v, dt);
+  }
+}
+
+// ---------- Suroviny (stromy rostou od keřů) ----------
+function makeTree(x, y, growth) {
+  const blobs = [];
+  for (let i = 0; i < Math.floor(rand(4,7)); i++) {
+    const ang = rand(0, Math.PI*2), r = rand(0, 7);
+    blobs.push({ dx: Math.cos(ang)*r, dy: Math.sin(ang)*r, r: rand(7,12), shade: Math.floor(rand(0,3)) });
+  }
+  return { x, y, type:'tree', amount: 5, blobs, growth: growth !== undefined ? growth : 1 };
+}
+function makeRock(x, y) {
+  const points = [];
+  const n = Math.floor(rand(6,9)), baseR = rand(8,13);
+  for (let i = 0; i < n; i++) {
+    const ang = (i/n)*Math.PI*2, rr = baseR*rand(0.65,1.15);
+    points.push({ x: Math.cos(ang)*rr, y: Math.sin(ang)*rr*0.85 });
+  }
+  return { x, y, type:'stone', amount:5, points, shade: Math.floor(rand(0,40)), growth:1 };
+}
+function validResourceSpot(x, y) {
+  return dist({x,y}, CASTLE) > 260 && !inWater(x,y) && !inMountainRaw(x,y) && !inStreamRaw(x,y);
+}
+const TREE_TARGET = 260, ROCK_TARGET = 180;
+function spawnResources() {
+  resources = [];
+  let tries = 0;
+  while (resources.filter(r=>r.type==='tree').length < TREE_TARGET && tries < 4000) {
+    tries++;
+    const x = rand(30,W-30), y = rand(30,H-30);
+    if (validResourceSpot(x,y)) resources.push(makeTree(x,y,1));
+  }
+  tries = 0;
+  while (resources.filter(r=>r.type==='stone').length < ROCK_TARGET && tries < 4000) {
+    tries++;
+    const x = rand(30,W-30), y = rand(30,H-30);
+    if (validResourceSpot(x,y)) resources.push(makeRock(x,y));
+  }
+  resources = resources.concat(makeMines());
+}
+function respawnResourcesTick() {
+  const tc = resources.filter(r=>r.type==='tree').length;
+  const rc = resources.filter(r=>r.type==='stone').length;
+  if (tc < TREE_TARGET) {
+    for (let i=0;i<300;i++){ const x=rand(30,W-30), y=rand(30,H-30); if (validResourceSpot(x,y)) { resources.push(makeTree(x,y,0)); break; } }
+  }
+  if (rc < ROCK_TARGET) {
+    for (let i=0;i<300;i++){ const x=rand(30,W-30), y=rand(30,H-30); if (validResourceSpot(x,y)) { resources.push(makeRock(x,y)); break; } }
+  }
+}
+function growTrees(dt) {
+  for (const r of resources) {
+    if (r.type === 'tree' && r.growth < 1) r.growth = Math.min(1, r.growth + dt*0.004);
+  }
+}
+function isHarvestable(r) { return r.type !== 'tree' || r.growth >= 0.4; }
+
+// ---------- Hrad ----------
+function buildCastleDefs() {
+  const x0 = CASTLE.x-HALF, x1 = CASTLE.x+HALF, y0 = CASTLE.y-HALF, y1 = CASTLE.y+HALF;
+  wallDefs = [
+    { id:'north', ax:x0, ay:y0, bx:x1, by:y0, hp:0, maxHp:2400, built:false, cost:{wood:10, stone:8} },
+    { id:'east',  ax:x1, ay:y0, bx:x1, by:y1, hp:0, maxHp:2400, built:false, cost:{wood:10, stone:8} },
+    { id:'west',  ax:x0, ay:y0, bx:x0, by:y1, hp:0, maxHp:2400, built:false, cost:{wood:10, stone:8} },
+    { id:'southL',ax:x0, ay:y1, bx:CASTLE.x-GATE_W/2, by:y1, hp:0, maxHp:1600, built:false, cost:{wood:8, stone:6} },
+    { id:'southR',ax:CASTLE.x+GATE_W/2, ay:y1, bx:x1, by:y1, hp:0, maxHp:1600, built:false, cost:{wood:8, stone:6} },
+  ];
+  towerDefs = [
+    { id:'nw', x:x0, y:y0, hp:0, maxHp:1200, built:false, cost:{wood:6, stone:14}, range:220, cooldown:0, fireRate:50, dmg:18 },
+    { id:'ne', x:x1, y:y0, hp:0, maxHp:1200, built:false, cost:{wood:6, stone:14}, range:220, cooldown:0, fireRate:50, dmg:18 },
+    { id:'sw', x:x0, y:y1, hp:0, maxHp:1200, built:false, cost:{wood:6, stone:14}, range:220, cooldown:0, fireRate:50, dmg:18 },
+    { id:'se', x:x1, y:y1, hp:0, maxHp:1200, built:false, cost:{wood:6, stone:14}, range:220, cooldown:0, fireRate:50, dmg:18 },
+  ];
+}
+function castleComplete() { return wallDefs.every(w=>w.built) && towerDefs.every(t=>t.built); }
+function autoBuildCastle() {
+  for (const w of wallDefs) {
+    if (!w.built && castleWood >= w.cost.wood && castleStone >= w.cost.stone) {
+      w.built = true; w.hp = w.maxHp; castleWood -= w.cost.wood; castleStone -= w.cost.stone;
+      logMsg(`Postavena hradba (${w.id}).`);
+      if (wallDefs.every(x=>x.built) && !storyFlags.walls) { storyFlags.walls = true; logMsg('Hradby jsou dokončeny! Teď věže...', 'story'); }
+      return;
+    }
+  }
+  for (const t of towerDefs) {
+    if (!t.built && castleWood >= t.cost.wood && castleStone >= t.cost.stone) {
+      t.built = true; t.hp = t.maxHp; castleWood -= t.cost.wood; castleStone -= t.cost.stone;
+      logMsg(`Postavena věž (${t.id}).`);
+      if (towerDefs.every(x=>x.built) && !storyFlags.towers) {
+        storyFlags.towers = true;
+        showModal('Hrad dokončen!', 'Poslední kámen zapadl na místo. Tvůj hrad se tyčí nad krajinou jako maják naděje.\n\nKrálovna se usmívá: "Teď máme domov, který stojí za obranu."\n\nAle staré legendy praví, že čím silnější pevnost, tím silnější zlo přitahuje...', [{label:'Pokračovat'}]);
+      }
+      return;
+    }
+  }
+}
+function builtWalls() { return wallDefs.filter(w=>w.built && w.hp>0); }
+function builtTowers() { return towerDefs.filter(t=>t.built && t.hp>0); }
+function damagedWall() {
+  for (const w of wallDefs) if (w.built && w.hp > 0 && w.hp < w.maxHp*0.85) return w;
+  for (const t of towerDefs) if (t.built && t.hp > 0 && t.hp < t.maxHp*0.85) return t;
+  return null;
+}
+
+function isBlocked(nx, ny, entitySize) {
+  if (inWater(nx, ny)) return true;
+  if (inMountain(nx, ny)) return true;
+  if (blockedByStream(nx, ny)) return true;
+  if (dist({x:nx,y:ny}, CASTLE) < KEEP_RADIUS + entitySize) return true;
+  for (const w of builtWalls()) {
+    if (closestPointOnSegment(nx, ny, w.ax, w.ay, w.bx, w.by).dist < 12 + entitySize) return true;
+  }
+  for (const t of builtTowers()) {
+    if (dist({x:nx,y:ny}, t) < 20 + entitySize) return true;
+  }
+  if (!gateOpen) {
+    const gx0 = CASTLE.x-GATE_W/2, gx1 = CASTLE.x+GATE_W/2, gy = CASTLE.y+HALF;
+    if (nx > gx0-10 && nx < gx1+10 && Math.abs(ny-gy) < 12+entitySize) return true;
+  }
+  return false;
+}
+function moveEntity(ent, dx, dy) {
+  const len = Math.hypot(dx, dy) || 1;
+  dx /= len; dy /= len;
+  const sx = dx*ent.speed, sy = dy*ent.speed;
+  const cx = Math.max(ent.size, Math.min(W-ent.size, ent.x+sx));
+  const cy = Math.max(ent.size, Math.min(H-ent.size, ent.y+sy));
+  if (!isBlocked(cx, cy, ent.size)) { ent.x = cx; ent.y = cy; return; }
+  const ox = Math.max(ent.size, Math.min(W-ent.size, ent.x+sx));
+  if (!isBlocked(ox, ent.y, ent.size)) { ent.x = ox; return; }
+  const oy = Math.max(ent.size, Math.min(H-ent.size, ent.y+sy));
+  if (!isBlocked(ent.x, oy, ent.size)) { ent.y = oy; return; }
+  for (let i = 0; i < 16; i++) {
+    const ang = (i/16)*Math.PI*2;
+    const tx = Math.max(ent.size, Math.min(W-ent.size, ent.x + Math.cos(ang)*ent.speed));
+    const ty = Math.max(ent.size, Math.min(H-ent.size, ent.y + Math.sin(ang)*ent.speed));
+    if (!isBlocked(tx, ty, ent.size)) { ent.x = tx; ent.y = ty; return; }
+  }
+}
+function moveEntityToward(ent, tx, ty) { moveEntity(ent, tx-ent.x, ty-ent.y); }
+function unstickIfEmbedded(e) {
+  if (!isBlocked(e.x, e.y, e.size)) return;
+  for (let r = 16; r <= 400; r += 16) {
+    for (let i = 0; i < 20; i++) {
+      const ang = (i/20)*Math.PI*2;
+      const tx = Math.max(e.size, Math.min(W-e.size, e.x + Math.cos(ang)*r));
+      const ty = Math.max(e.size, Math.min(H-e.size, e.y + Math.sin(ang)*r));
+      if (!isBlocked(tx, ty, e.size)) { e.x = tx; e.y = ty; return; }
+    }
+  }
+}
+function moveTowardCastleInterior(ent) {
+  const gateOuter = { x: CASTLE.x, y: CASTLE.y + HALF + 60 };
+  if (dist(ent, CASTLE) > HALF + 150) ent.gatePhase = 'approach';
+  if (!ent.gatePhase) ent.gatePhase = 'approach';
+  if (ent.gatePhase === 'approach') {
+    moveEntityToward(ent, gateOuter.x, gateOuter.y);
+    if (dist(ent, gateOuter) < 26) ent.gatePhase = 'enter';
+  } else moveEntityToward(ent, CASTLE.x, CASTLE.y + 20);
+}
+function insideCastle(e) {
+  return Math.abs(e.x - CASTLE.x) < HALF - 14 && Math.abs(e.y - CASTLE.y) < HALF - 14;
+}
+function allAllies() {
+  const list = [player];
+  if (queen.alive) list.push(queen);
+  for (const g of guards) if (g.alive) list.push(g);
+  for (const s of army) list.push(s);
+  return list;
+}
+
+function nearestEnemyTarget(en) {
+  // příšery mířící na vesnici
+  if (en.villageTarget) {
+    const v = en.villageTarget;
+    const targets = [];
+    for (const d of v.defenders) if (d.hp > 0) targets.push(d);
+    if (v.dog.hp > 0) targets.push(v.dog);
+    for (const p of v.people) targets.push(p);
+    for (const c of v.children) targets.push(c);
+    for (const a of v.animals) targets.push(a);
+    if (targets.length > 0) {
+      let best = targets[0], bd = dist(en, targets[0]);
+      for (const t of targets) { const d = dist(en, t); if (d < bd) { bd = d; best = t; } }
+      if (dist(en, v) > 260) return { target: { x: v.x, y: v.y, kind:'move', ref:null }, d: dist(en, v) };
+      return { target: { x: best.x, y: best.y, kind:'villager', ref: best }, d: bd };
+    }
+    en.villageTarget = null;
+  }
+  let best = { x: player.x, y: player.y, kind:'player', ref: player };
+  let bestD = dist(en, player);
+  if (queen.alive && !queen.sheltering) {
+    const d = dist(en, queen);
+    if (d < bestD) { bestD = d; best = { x:queen.x, y:queen.y, kind:'queen', ref:queen }; }
+  }
+  for (const g of guards) {
+    if (!g.alive || g.sheltering) continue;
+    const d = dist(en, g);
+    if (d < bestD) { bestD = d; best = { x:g.x, y:g.y, kind:'guard', ref:g }; }
+  }
+  for (const s of army) {
+    const d = dist(en, s);
+    if (d < bestD) { bestD = d; best = { x:s.x, y:s.y, kind:'soldier', ref:s }; }
+  }
+  for (const w of builtWalls()) {
+    const cp = closestPointOnSegment(en.x, en.y, w.ax, w.ay, w.bx, w.by);
+    if (cp.dist < bestD) { bestD = cp.dist; best = { x:cp.x, y:cp.y, kind:'wall', ref:w }; }
+  }
+  for (const t of builtTowers()) {
+    const d = dist(en, t);
+    if (d < bestD) { bestD = d; best = { x:t.x, y:t.y, kind:'tower', ref:t }; }
+  }
+  return { target: best, d: bestD };
+}
+
+function makeGuard(offsetX) {
+  return { x: CASTLE.x+offsetX, y: CASTLE.y+HALF+90, size:16, speed:1.0, hp:150, maxHp:150,
+    wood:0, stone:0, carryCap:6, alive:true, respawnTimer:0, attackCooldown:0, sheltering:false,
+    targetRes:null, targetSince:0, blacklist:[], gatePhase:'approach' };
+}
+function makeSoldier(x, y) {
+  return { x, y, size:15, speed:1.05, hp:120, maxHp:120, attackCooldown:0 };
+}
+
+// ---------- Počasí ----------
+function initWeather() {
+  weather = { type:'clear', timer: rand(50, 100), rain: [], tornado: null, flashTimer: 0, thunderTimer: 0 };
+}
+function setWeather(type) {
+  weather.type = type;
+  weather.timer = rand(25, 55);
+  weather.tornado = null;
+  const names = { clear:'jasno', rain:'déšť', storm:'bouřka', fog:'mlha' };
+  document.getElementById('weatherlbl').textContent = names[type];
+  if (type === 'rain') logMsg('Začíná pršet. 🌧️');
+  if (type === 'storm') {
+    logMsg('Blíží se bouřka! ⛈️', 'warn');
+    if (Math.random() < 0.35) {
+      weather.tornado = { x: rand(200, W-200), y: rand(200, H-200), ang: rand(0, Math.PI*2) };
+      logMsg('Na obzoru se točí tornádo!', 'warn');
+    }
+  }
+  if (type === 'fog') logMsg('Krajinu halí hustá mlha. 🌫️');
+  if (type === 'clear') logMsg('Počasí se vyjasnilo. ☀️');
+}
+function updateWeather(dt) {
+  weather.timer -= dt;
+  if (weather.timer <= 0) {
+    const roll = Math.random();
+    if (roll < 0.5) setWeather('clear');
+    else if (roll < 0.7) setWeather('rain');
+    else if (roll < 0.85) setWeather('storm');
+    else setWeather('fog');
+  }
+  if ((weather.type === 'rain' || weather.type === 'storm') && weather.rain.length < 220) {
+    for (let i = 0; i < 12; i++) weather.rain.push({ x: rand(0, W), y: rand(-40, 0), sp: rand(9, 15) });
+  }
+  for (const r of weather.rain) { r.y += r.sp; r.x += weather.type==='storm' ? 4 : 1.4; }
+  weather.rain = weather.rain.filter(r => r.y < H + 20);
+  if (weather.type !== 'rain' && weather.type !== 'storm') weather.rain = [];
+  if (weather.type === 'storm') {
+    weather.thunderTimer -= dt;
+    if (weather.thunderTimer <= 0) {
+      weather.thunderTimer = rand(4, 11);
+      weather.flashTimer = 0.16;
+      playThunder();
+    }
+    if (weather.tornado) {
+      const t = weather.tornado;
+      t.ang += rand(-0.3, 0.3);
+      t.x += Math.cos(t.ang) * 1.6;
+      t.y += Math.sin(t.ang) * 1.6;
+      t.x = Math.max(60, Math.min(W-60, t.x));
+      t.y = Math.max(60, Math.min(H-60, t.y));
+      for (const e of allAllies()) { if (dist(e, t) < 55) e.hp = Math.max(0, e.hp - dt*4); }
+      for (const en of enemies) { if (dist(en, t) < 55) en.hp -= dt*8; }
+      for (const wf of wolves) { if (dist(wf, t) < 55) wf.hp -= dt*8; }
+    }
+  }
+  if (weather.flashTimer > 0) weather.flashTimer -= dt;
+}
+
+// ---------- Náhodné události s rozhodováním ----------
+function maybeRandomEvent(dt) {
+  eventTimer -= dt;
+  if (eventTimer > 0 || phase !== 'day') return;
+  eventTimer = rand(90, 160);
+  if (Math.random() > 0.5) return;
+  const roll = Math.random();
+  if (roll < 0.34) {
+    showModal('Potulný kupec', 'K bráně dorazil kupec s vozem plným dřeva.\n\n"Vyměním ti 15 dřeva za 10 kamene. Co ty na to?"', [
+      { label:'Přijmout', cb: () => {
+        if (castleStone >= 10) { castleStone -= 10; castleWood += 15; logMsg('Vyměnil jsi 10 kamene za 15 dřeva.'); }
+        else logMsg('Neměl jsi dost kamene, kupec odjel.', 'warn');
+      }},
+      { label:'Odmítnout', cb: () => logMsg('Kupec pokrčil rameny a odjel.') }
+    ]);
+  } else if (roll < 0.67) {
+    showModal('Poutník', 'Ke hradu přichází zjizvený muž s mečem u pasu.\n\n"Přežil jsem pád své vesnice. Nech mě sloužit ve tvé armádě - zdarma. Jen mi dej střechu nad hlavou."', [
+      { label:'Přijmout ho', cb: () => {
+        if (army.length < 6) { army.push(makeSoldier(CASTLE.x, CASTLE.y+HALF+80)); logMsg('Poutník se přidal k tvé armádě!', 'story'); }
+        else logMsg('Armáda je plná, poutník odešel jinam.');
+      }},
+      { label:'Poslat pryč', cb: () => logMsg('Poutník smutně odešel do noci.') }
+    ]);
+  } else {
+    showModal('Stará věštkyně', 'U ohně se z ničeho nic objevila stařena.\n\n"Vidím temnotu, mladý pane. Příští noc bude krutá... Mohu ji zadržet, ale bude to stát 8 dřeva z tvého skladu."', [
+      { label:'Zaplatit', cb: () => {
+        if (castleWood >= 8) { castleWood -= 8; wave = Math.max(0, wave - 1); logMsg('Věštkyně zamumlala zaklínadlo. Příští vlna bude slabší.', 'story'); }
+        else logMsg('Neměl jsi dost dřeva. Věštkyně zmizela.', 'warn');
+      }},
+      { label:'Odmítnout', cb: () => logMsg('"Jak myslíš..." zašeptala a rozplynula se.') }
+    ]);
+  }
+}
+
+// ---------- Inicializace ----------
+function init() {
+  dayNumber = 1;
+  dayStats = { kills:0, wolfKills:0, villagersLost:0, animalsLost:0, born:0 };
+  storyFlags = { walls:false, towers:false, hydraSeen:false, firstNight:false };
+  gamePaused = false;
+  eventTimer = rand(50, 90);
+  hireHintShown = false;
+  buildCastleDefs();
+  makeWaters();
+  makeMountains();
+  makePaths();
+  makeTunnels();
+  makeStreams();
+  makeVillages();
+  makeWolfPacks();
+  initWeather();
+  player = { x:CASTLE.x, y:CASTLE.y+HALF+90, size:16, speed:1.1, hp:100, maxHp:100, wood:0, stone:0, attackCooldown:0 };
+  queen = { x:CASTLE.x-60, y:CASTLE.y+HALF+90, size:15, speed:0.9, hp:100, maxHp:100, wood:0, stone:0, cooldown:0,
+    alive:true, respawnTimer:0, carryCap:6, sheltering:false, targetRes:null, targetSince:0, blacklist:[], gatePhase:'approach' };
+  guards = [ makeGuard(60), makeGuard(120) ];
+  army = [];
+  facing = { x:0, y:1 };
+  projectiles = [];
+  enemies = [];
+  castleWood = 0; castleStone = 0;
+  resourceTimer = 4; fireTime = 0;
+  gateOpen = false; gateOpenTimer = 0;
+  spawnResources();
+  phase = 'day';
+  dayLength = 1500; nightLength = 45;
+  cycleTimer = dayLength;
+  elapsed = 0; wave = 0; gameOver = false;
+  document.getElementById('log').innerHTML = '';
+  updateHUD();
+  showModal('Kronika: Den první',
+    'Píše se rok 1257. Tvé panství lehlo popelem, když z hlubin země povstaly stíny. Ty, poslední rytíř svého rodu, jsi se svou královnou a dvěma věrnými zbrojnoši dorazil do údolí mezi horami.\n\n"Tady," řekla královna, "tady postavíme nový hrad. A tentokrát ho ubráníme."\n\nSbírej dřevo a kámen. Stavěj. A až padne noc... buď připraven.',
+    [{ label:'Začít' }]);
+}
+
+function updateHUD() {
+  document.getElementById('hp').textContent = Math.max(0, Math.round(player.hp));
+  document.getElementById('carry').textContent = `${player.wood}d/${player.stone}k`;
+  document.getElementById('stock').textContent = `${Math.floor(castleWood)}d/${Math.floor(castleStone)}k`;
+  document.getElementById('queenhp').textContent = queen.alive ? (queen.sheltering ? '🏠' : Math.max(0, Math.round(queen.hp))) : '💀';
+  const g1 = guards[0].alive ? (guards[0].sheltering ? '🏠' : Math.max(0, Math.round(guards[0].hp))) : '💀';
+  const g2 = guards[1].alive ? (guards[1].sheltering ? '🏠' : Math.max(0, Math.round(guards[1].hp))) : '💀';
+  document.getElementById('guardhp').textContent = `${g1}/${g2}`;
+  document.getElementById('armycount').textContent = army.length;
+  document.getElementById('gatestate').textContent = gateOpen ? 'otevřená' : 'zavřená';
+  document.getElementById('daynum').textContent = dayNumber;
+  document.getElementById('phase').textContent = phase === 'day' ? 'Den' : 'Noc';
+  document.getElementById('timer').textContent = Math.ceil(cycleTimer);
+}
+
+function doGather() {
+  if (gameOver || gamePaused) return;
+  for (let r of resources) {
+    if (dist(player, r) < 30 && isHarvestable(r)) {
+      if (r.type === 'tree') player.wood += 1; else player.stone += 1;
+      if (r.amount !== Infinity) {
+        r.amount -= 1;
+        if (r.amount <= 0) resources.splice(resources.indexOf(r), 1);
+      }
+      break;
+    }
+  }
+}
+function doAttack() {
+  if (gameOver || gamePaused || player.attackCooldown > 0) return;
+  player.attackCooldown = 30;
+  for (let en of enemies) { if (dist(player, en) < 42) en.hp -= 34; }
+  for (let wf of wolves) { if (dist(player, wf) < 42) wf.hp -= 34; }
+}
+function tryHire() {
+  if (gameOver || gamePaused) return;
+  for (const v of villages) {
+    if (dist(player, v) < 140) {
+      if (army.length >= 6) { logMsg('Tvá armáda je plná (max 6).', 'warn'); return; }
+      if (castleWood >= 8 && castleStone >= 8) {
+        castleWood -= 8; castleStone -= 8;
+        army.push(makeSoldier(v.x + rand(-20,20), v.y + rand(-20,20)));
+        logMsg('Najal jsi zbrojnoše z vesnice! (−8 dřeva, −8 kamene)', 'story');
+      } else logMsg('Ve skladu hradu není dost surovin (potřeba 8 dřeva + 8 kamene).', 'warn');
+      return;
+    }
+  }
+  logMsg('Musíš stát blízko vesnice, abys mohl najímat.', 'warn');
+}
+
+function availableTypesForWave(w) {
+  const types = ['bat', 'zombie'];
+  if (w >= 2) types.push('skeleton');
+  if (w >= 3) types.push('witch');
+  if (w >= 5) types.push('knight');
+  return types;
+}
+function spawnWave() {
+  wave += 1;
+  const count = 6 + wave*2;
+  const types = availableTypesForWave(wave);
+  for (let i = 0; i < count; i++) {
+    const edge = Math.floor(rand(0,4));
+    let x, y;
+    if (edge === 0) { x = rand(0,W); y = -20; }
+    else if (edge === 1) { x = rand(0,W); y = H+20; }
+    else if (edge === 2) { x = -20; y = rand(0,H); }
+    else { x = W+20; y = rand(0,H); }
+    const t = types[Math.floor(rand(0, types.length))];
+    const def = ENEMY_TYPES[t];
+    const en = { x, y, type:t, hp:def.baseHp + wave*3, maxHp:def.baseHp + wave*3, speed:def.baseSpeed, size:def.size, wobble:rand(0,Math.PI*2), villageTarget:null };
+    if (villages.length > 0 && Math.random() < 0.35) en.villageTarget = villages[Math.floor(rand(0, villages.length))];
+    enemies.push(en);
+  }
+  if (wave >= 4 && wave % 3 === 0) {
+    const def = ENEMY_TYPES.hydra;
+    const edge = Math.floor(rand(0,4));
+    let x, y;
+    if (edge === 0) { x = rand(0,W); y = -30; }
+    else if (edge === 1) { x = rand(0,W); y = H+30; }
+    else if (edge === 2) { x = -30; y = rand(0,H); }
+    else { x = W+30; y = rand(0,H); }
+    enemies.push({ x, y, type:'hydra', hp:def.baseHp + wave*10, maxHp:def.baseHp + wave*10, speed:def.baseSpeed, size:def.size, wobble:0, villageTarget:null });
+    if (!storyFlags.hydraSeen) {
+      storyFlags.hydraSeen = true;
+      logMsg('Země se chvěje... HYDRA povstala z bažin!', 'warn');
+    } else logMsg('Hydra se vrací!', 'warn');
+  }
+  logMsg(`Vlna ${wave}: z temnoty se vynořilo ${count} příšer.`, 'warn');
+}
+
+function updateGate(dt) {
+  const gp = { x: CASTLE.x, y: CASTLE.y+HALF };
+  let near = false;
+  for (const e of allAllies()) { if (dist(e, gp) < 110) { near = true; break; } }
+  if (near) { gateOpen = true; gateOpenTimer = 1.2; }
+  else if (gateOpenTimer > 0) { gateOpenTimer -= dt; if (gateOpenTimer <= 0) gateOpen = false; }
+}
+
+// ---------- Chování pomocníků (královna + zbrojnoši) ----------
+function helperBehavior(h, dt, ringR, crossbowDmg, crossbowCd, crossbowRange) {
+  if (h.cooldown === undefined) h.cooldown = 0;
+  if (h.cooldown > 0) h.cooldown--;
+
+  let threat = null, threatD = crossbowRange;
+  for (const en of hostilesNear()) { const d = dist(h, en); if (d < threatD) { threatD = d; threat = en; } }
+
+  if (threat) {
+    if (Math.abs(dist(h, CASTLE) - ringR) > 30) moveTowardCastleInterior(h);
+    if (h.cooldown <= 0) {
+      const ex = threat.x-h.x, ey = threat.y-h.y, el = Math.hypot(ex,ey)||1;
+      projectiles.push({ x:h.x, y:h.y, vx:(ex/el)*6, vy:(ey/el)*6, dmg:crossbowDmg, life:90, friendly:true });
+      h.cooldown = crossbowCd;
+    }
+    return;
+  }
+
+  // večer / noc bez hrozby → k ohni
+  const evening = (phase === 'day' && cycleTimer < 80) || phase === 'night';
+  if (evening) {
+    if (dist(h, CAMPFIRE) > 45) moveTowardCastleInterior(h);
+    return;
+  }
+
+  // oprava poškozených zdí
+  const dw = damagedWall();
+  if (dw && castleStone >= 1) {
+    const mx = dw.ax !== undefined ? (dw.ax+dw.bx)/2 : dw.x;
+    const my = dw.ay !== undefined ? (dw.ay+dw.by)/2 : dw.y;
+    if (dist(h, {x:mx, y:my}) > 45) { moveEntityToward(h, mx, my); return; }
+    dw.hp = Math.min(dw.maxHp, dw.hp + dt*40);
+    castleStone = Math.max(0, castleStone - dt*0.4);
+    return;
+  }
+
+  // sběr surovin
+  const carrying = h.wood + h.stone;
+  if (carrying < h.carryCap && resources.length > 0) {
+    h.blacklist = (h.blacklist || []).filter(b => b.until > elapsed);
+    let nearest = null, nd = Infinity;
+    for (const r of resources) {
+      if (!isHarvestable(r)) continue;
+      if (h.blacklist.some(b => b.ref === r)) continue;
+      const d = dist(h, r); if (d < nd) { nd = d; nearest = r; }
+    }
+    if (nearest) {
+      if (nearest !== h.targetRes) { h.targetRes = nearest; h.targetSince = elapsed; }
+      if (nd < 26) {
+        if (nearest.type === 'tree') h.wood += 1; else h.stone += 1;
+        if (nearest.amount !== Infinity) {
+          nearest.amount -= 1;
+          if (nearest.amount <= 0) resources.splice(resources.indexOf(nearest), 1);
+        }
+        h.targetRes = null;
+      } else {
+        moveEntityToward(h, nearest.x, nearest.y);
+        if (elapsed - h.targetSince > 12) {
+          h.blacklist.push({ ref: nearest, until: elapsed + 20 });
+          h.targetRes = null;
+        }
+      }
+    }
+  } else {
+    if (dist(h, CASTLE) > 55) moveTowardCastleInterior(h);
+    else { castleWood += h.wood; castleStone += h.stone; h.wood = 0; h.stone = 0; }
+  }
+}
+function updateQueen(dt) {
+  if (!queen.alive) {
+    queen.respawnTimer -= dt;
+    if (queen.respawnTimer <= 0) {
+      queen.alive = true; queen.hp = queen.maxHp; queen.sheltering = false; queen.gatePhase = 'approach';
+      queen.x = CASTLE.x-60; queen.y = CASTLE.y+HALF+90; queen.wood = 0; queen.stone = 0;
+      logMsg('Královna se zotavila a vrací se!', 'story');
+    }
+    return;
+  }
+  if (queen.hp <= 0) { queen.alive = false; queen.respawnTimer = 60; logMsg('Královna padla! Uzdraví se v útočišti.', 'warn'); return; }
+  if (!queen.sheltering && queen.hp < queen.maxHp*0.3) queen.sheltering = true;
+  if (queen.sheltering) {
+    if (dist(queen, CASTLE) > KEEP_RADIUS + queen.size + 18) moveTowardCastleInterior(queen);
+    else queen.hp = Math.min(queen.maxHp, queen.hp + dt*5);
+    if (queen.hp >= queen.maxHp*0.85) queen.sheltering = false;
+    return;
+  }
+  helperBehavior(queen, dt, 120, 22, 38, 300);
+}
+function updateGuard(g, dt) {
+  if (!g.alive) {
+    g.respawnTimer -= dt;
+    if (g.respawnTimer <= 0) {
+      g.alive = true; g.hp = g.maxHp; g.sheltering = false; g.gatePhase = 'approach';
+      g.x = CASTLE.x; g.y = CASTLE.y+HALF+90; g.wood = 0; g.stone = 0;
+    }
+    return;
+  }
+  if (g.hp <= 0) { g.alive = false; g.respawnTimer = 60; return; }
+  if (!g.sheltering && g.hp < g.maxHp*0.3) g.sheltering = true;
+  if (g.sheltering) {
+    if (dist(g, CASTLE) > KEEP_RADIUS + g.size + 18) moveTowardCastleInterior(g);
+    else g.hp = Math.min(g.maxHp, g.hp + dt*5);
+    if (g.hp >= g.maxHp*0.85) g.sheltering = false;
+    return;
+  }
+  helperBehavior(g, dt, 145, 20, 32, 320);
+}
+function updateSoldier(s, dt) {
+  if (s.attackCooldown > 0) s.attackCooldown--;
+  let threat = null, threatD = 240;
+  for (const en of hostilesNear()) { const d = dist(s, en); if (d < threatD) { threatD = d; threat = en; } }
+  if (threat) {
+    if (threatD > 34) moveEntityToward(s, threat.x, threat.y);
+    else if (s.attackCooldown <= 0) { threat.hp -= 26; s.attackCooldown = 24; }
+  } else if (dist(s, player) > 65) {
+    moveEntityToward(s, player.x + rand(-30,30), player.y + rand(-30,30));
+  }
+}
+
+// ---------- Přechod dne a noci ----------
+function startNight() {
+  phase = 'night';
+  cycleTimer = nightLength;
+  spawnWave();
+  if (!storyFlags.firstNight) {
+    storyFlags.firstNight = true;
+    logMsg('Slunce zapadlo. Z lesů se ozývá vytí a sténání...', 'warn');
+  }
+}
+function startDay() {
+  phase = 'day';
+  cycleTimer = dayLength;
+  dayNumber++;
+  const s = dayStats;
+  const summary = `Noc je za námi.\n\nZabito příšer: ${s.kills}\nZabito vlků: ${s.wolfKills}\nPadlí vesničané: ${s.villagersLost}\nZtracená zvířata: ${s.animalsLost}\nNově narození: ${s.born}\n\nStav hradu: hradby ${wallDefs.filter(w=>w.built&&w.hp>0).length}/5, věže ${towerDefs.filter(t=>t.built&&t.hp>0).length}/4`;
+  showModal(`Kronika: Den ${dayNumber}`, summary, [{ label:'Nový den začíná' }]);
+  dayStats = { kills:0, wolfKills:0, villagersLost:0, animalsLost:0, born:0 };
+}
+
+function update(dt) {
+  if (gameOver || gamePaused) return;
+  elapsed += dt;
+  cycleTimer -= dt;
+  fireTime += dt;
+
+  updateGate(dt);
+  updateWeather(dt);
+  maybeRandomEvent(dt);
+  growTrees(dt);
+
+  if (player.attackCooldown > 0) player.attackCooldown--;
+
+  let dx = 0, dy = 0;
+  if (keys['ArrowUp'] || keys['w'] || keys['W']) dy -= 1;
+  if (keys['ArrowDown'] || keys['s'] || keys['S']) dy += 1;
+  if (keys['ArrowLeft'] || keys['a'] || keys['A']) dx -= 1;
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) dx += 1;
+  if (dx !== 0 || dy !== 0) {
+    const l = Math.hypot(dx,dy)||1;
+    facing = { x:dx/l, y:dy/l };
+    moveEntity(player, dx, dy);
+  }
+
+  if (dist(player, CASTLE) < 65) {
+    const rate = dt*2;
+    const w = Math.min(player.wood, rate), s = Math.min(player.stone, rate);
+    player.wood -= w; castleWood += w;
+    player.stone -= s; castleStone += s;
+  }
+
+  // léčení uvnitř hradu
+  for (const e of allAllies()) {
+    if (insideCastle(e)) e.hp = Math.min(e.maxHp, e.hp + dt*1.5);
+  }
+
+  autoBuildCastle();
+  unstickIfEmbedded(player);
+  if (queen.alive) unstickIfEmbedded(queen);
+  for (const g of guards) if (g.alive) unstickIfEmbedded(g);
+  for (const s of army) unstickIfEmbedded(s);
+
+  updateQueen(dt);
+  for (const g of guards) updateGuard(g, dt);
+  for (const s of army) updateSoldier(s, dt);
+  army = army.filter(s => s.hp > 0);
+  updateVillages(dt);
+  updateWolves(dt);
+
+  // nápověda k najímání
+  if (!hireHintShown) {
+    for (const v of villages) {
+      if (dist(player, v) < 160) { hireHintShown = true; logMsg('Tip: Stiskni N u vesnice a najmi zbrojnoše do své armády (8 dřeva + 8 kamene).', 'story'); break; }
+    }
+  }
+
+  resourceTimer -= dt;
+  if (resourceTimer <= 0) { respawnResourcesTick(); resourceTimer = 3; }
+
+  if (cycleTimer <= 0) {
+    if (phase === 'day') startNight();
+    else startDay();
+  }
+
+  for (const t of builtTowers()) {
+    if (t.cooldown > 0) t.cooldown--;
+    if (t.cooldown <= 0) {
+      let closest = null, cd2 = t.range;
+      for (const en of hostilesNear()) { const d = dist(t, en); if (d < cd2) { cd2 = d; closest = en; } }
+      if (closest) {
+        const ex = closest.x-t.x, ey = closest.y-t.y, el = Math.hypot(ex,ey)||1;
+        projectiles.push({ x:t.x, y:t.y, vx:(ex/el)*5, vy:(ey/el)*5, dmg:t.dmg, life:90, friendly:true });
+        t.cooldown = t.fireRate;
+      }
+    }
+  }
+
+  for (const p of projectiles) {
+    p.x += p.vx; p.y += p.vy; p.life--;
+    for (const en of enemies) { if (dist(p, en) < en.size) { en.hp -= p.dmg; p.life = 0; break; } }
+    if (p.life > 0) { for (const wf of wolves) { if (dist(p, wf) < wf.size) { wf.hp -= p.dmg; p.life = 0; break; } } }
+  }
+  projectiles = projectiles.filter(p => p.life > 0 && p.x > -20 && p.x < W+20 && p.y > -20 && p.y < H+20);
+
+  for (const en of enemies) {
+    const def = ENEMY_TYPES[en.type];
+    const { target, d } = nearestEnemyTarget(en);
+    let ex = target.x-en.x, ey = target.y-en.y;
+    const el = Math.hypot(ex,ey)||1;
+    ex /= el; ey /= el;
+    if (def.erratic) {
+      en.wobble += 0.06;
+      ex += Math.sin(en.wobble)*0.5;
+      ey += Math.cos(en.wobble*1.3)*0.5;
+      const wl = Math.hypot(ex,ey)||1;
+      ex /= wl; ey /= wl;
+    }
+    if (en.type === 'hydra') en.wobble += 0.03;
+    en.x += ex*en.speed;
+    en.y += ey*en.speed;
+
+    if (target.kind === 'player' && d < 20+en.size*0.4) player.hp = Math.max(0, player.hp - (en.type==='hydra'?0.5:0.15));
+    if (target.kind === 'queen' && d < 20 && queen.alive) queen.hp = Math.max(0, queen.hp - 0.2);
+    if (target.kind === 'guard' && d < 20 && target.ref.alive) target.ref.hp = Math.max(0, target.ref.hp - 0.2);
+    if (target.kind === 'soldier' && d < 20) target.ref.hp = Math.max(0, target.ref.hp - 0.2);
+    if (target.kind === 'villager' && d < 20) target.ref.hp -= 0.3;
+    if (target.kind === 'wall' && d < 20+en.size*0.4) target.ref.hp -= (def.wallDamage || 0.4);
+    if (target.kind === 'tower' && d < 26+en.size*0.4) target.ref.hp -= (def.wallDamage || 0.4);
+  }
+
+  const beforeE = enemies.length;
+  enemies = enemies.filter(en => en.hp > 0);
+  dayStats.kills += beforeE - enemies.length;
+
+  if (player.hp <= 0) endGame(false);
+  updateHUD();
+}
+
+function endGame(won) {
+  gameOver = true;
+  showModal(won ? 'Vítězství!' : 'Konec kroniky',
+    won ? `Přežil jsi! Dosažená vlna: ${wave}` : `Poslední rytíř padl...\n\nPřežité dny: ${dayNumber}\nPřežité vlny: ${wave}\n\nAle legenda praví, že hrady nikdy nezůstávají prázdné dlouho...`,
+    [{ label:'Hrát znovu', cb: () => init() }]);
+}
+
+// ==================== VYKRESLOVÁNÍ ====================
+function drawKnight(x, y, size, colorBody, colorTrim, hatType) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.beginPath(); ctx.ellipse(0, size*0.9, size*0.7, size*0.25, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fill();
+  ctx.fillStyle = colorBody;
+  ctx.beginPath();
+  ctx.moveTo(-size*0.5, size*0.6); ctx.lineTo(-size*0.6, -size*0.1); ctx.lineTo(-size*0.3, -size*0.4);
+  ctx.lineTo(size*0.3, -size*0.4); ctx.lineTo(size*0.6, -size*0.1); ctx.lineTo(size*0.5, size*0.6);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = colorTrim; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, -size*0.55, size*0.4, 0, Math.PI*2);
+  ctx.fillStyle = colorBody; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#111';
+  ctx.fillRect(-size*0.18, -size*0.62, size*0.36, size*0.14);
+  if (hatType === 'crown') {
+    ctx.fillStyle = '#ffd54f';
+    ctx.beginPath();
+    ctx.moveTo(-size*0.3, -size*0.9); ctx.lineTo(-size*0.3, -size*1.15); ctx.lineTo(-size*0.12, -size*0.95);
+    ctx.lineTo(0, -size*1.2); ctx.lineTo(size*0.12, -size*0.95); ctx.lineTo(size*0.3, -size*1.15);
+    ctx.lineTo(size*0.3, -size*0.9); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.fillStyle = colorTrim;
+    ctx.beginPath(); ctx.moveTo(0, -size*0.95); ctx.lineTo(-size*0.1, -size*1.25); ctx.lineTo(size*0.1, -size*1.25);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(size*0.4, size*0.05); ctx.lineTo(size*0.75, -size*0.15); ctx.stroke();
+  ctx.strokeStyle = '#8a8a8a'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(size*0.55, -size*0.35); ctx.lineTo(size*0.95, size*0.05); ctx.stroke();
+  ctx.restore();
+}
+function drawZombie(x, y, size) {
+  ctx.save(); ctx.translate(x, y);
+  // roztažené paže
+  ctx.strokeStyle = '#3a5a2a'; ctx.lineWidth = size*0.22; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-size*0.4, -size*0.2); ctx.lineTo(-size*1.0, -size*0.35); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(size*0.4, -size*0.2); ctx.lineTo(size*1.0, -size*0.3); ctx.stroke();
+  // roztrhané tělo
+  ctx.fillStyle = '#4a6b3a';
+  ctx.beginPath(); ctx.ellipse(0, 0, size*0.6, size*0.75, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#3a4a2a';
+  ctx.fillRect(-size*0.3, size*0.15, size*0.25, size*0.3);
+  ctx.fillRect(size*0.05, size*0.3, size*0.3, size*0.2);
+  // hlava nakloněná
+  ctx.save(); ctx.rotate(-0.18);
+  ctx.fillStyle = '#5a7a4a';
+  ctx.beginPath(); ctx.arc(0, -size*0.62, size*0.45, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ff3333';
+  ctx.fillRect(-size*0.26, -size*0.7, size*0.16, size*0.11);
+  ctx.fillRect(size*0.1, -size*0.7, size*0.16, size*0.11);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(-size*0.15, -size*0.42, size*0.3, size*0.08);
+  ctx.restore();
+  ctx.restore();
+}
+function drawSkeleton(x, y, size) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.strokeStyle = '#d8d8c8'; ctx.lineWidth = size*0.14; ctx.lineCap = 'round';
+  // paže s mečem
+  ctx.beginPath(); ctx.moveTo(-size*0.1, -size*0.05); ctx.lineTo(-size*0.7, size*0.15); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(size*0.1, -size*0.05); ctx.lineTo(size*0.6, -size*0.2); ctx.stroke();
+  ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(size*0.6, -size*0.2); ctx.lineTo(size*1.0, -size*0.7); ctx.stroke();
+  // lebka
+  ctx.fillStyle = '#e5e5d5';
+  ctx.beginPath(); ctx.arc(0, -size*0.55, size*0.42, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#e5e5d5';
+  ctx.fillRect(-size*0.22, -size*0.3, size*0.44, size*0.14);
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(-size*0.15, -size*0.6, size*0.09, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(size*0.15, -size*0.6, size*0.09, 0, Math.PI*2); ctx.fill();
+  ctx.fillRect(-size*0.16, -size*0.26, size*0.05, size*0.08);
+  ctx.fillRect(-size*0.03, -size*0.26, size*0.05, size*0.08);
+  ctx.fillRect(size*0.1, -size*0.26, size*0.05, size*0.08);
+  // páteř a žebra
+  ctx.strokeStyle = '#d8d8c8'; ctx.lineWidth = size*0.16;
+  ctx.beginPath(); ctx.moveTo(0, -size*0.1); ctx.lineTo(0, size*0.6); ctx.stroke();
+  ctx.lineWidth = size*0.1;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(0, size*(-0.02 + i*0.18), size*0.32, 0.25, Math.PI - 0.25);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawWitch(x, y, size) {
+  ctx.save(); ctx.translate(x, y);
+  // koště
+  ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-size*0.9, size*0.4); ctx.lineTo(size*0.9, size*0.15); ctx.stroke();
+  ctx.fillStyle = '#c9a86a';
+  ctx.beginPath();
+  ctx.moveTo(size*0.9, size*0.15); ctx.lineTo(size*1.35, size*0.0); ctx.lineTo(size*1.35, size*0.35); ctx.closePath(); ctx.fill();
+  // plášť
+  ctx.fillStyle = '#4a1a6a';
+  ctx.beginPath(); ctx.moveTo(-size*0.5, size*0.6); ctx.quadraticCurveTo(0, -size*0.2, size*0.5, size*0.6); ctx.closePath(); ctx.fill();
+  // hlava
+  ctx.fillStyle = '#c9e0a0';
+  ctx.beginPath(); ctx.arc(0, -size*0.35, size*0.3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#2a4a1a';
+  ctx.beginPath(); ctx.arc(-size*0.1, -size*0.4, size*0.05, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(size*0.1, -size*0.4, size*0.05, 0, Math.PI*2); ctx.fill();
+  // špičatý klobouk s krempou
+  ctx.fillStyle = '#2a0a3a';
+  ctx.beginPath(); ctx.ellipse(0, -size*0.52, size*0.48, size*0.12, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-size*0.3, -size*0.55); ctx.lineTo(size*0.28, -size*0.55); ctx.lineTo(size*0.05, -size*1.35); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function drawBat(x, y, size, wobble) {
+  ctx.save(); ctx.translate(x, y);
+  const flap = Math.sin(wobble*4)*0.55;
+  ctx.fillStyle = '#2a1a3a';
+  // křídla s membránou
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(s*size*0.7, -size*0.55 - flap*size*0.4, s*size*1.15, -size*0.15 - flap*size*0.35);
+    ctx.quadraticCurveTo(s*size*0.85, size*0.12, s*size*0.55, size*0.05);
+    ctx.quadraticCurveTo(s*size*0.3, size*0.22, 0, size*0.1);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = '#3a2a4a';
+  ctx.beginPath(); ctx.ellipse(0, 0, size*0.32, size*0.4, 0, 0, Math.PI*2); ctx.fill();
+  // uši a oči
+  ctx.beginPath(); ctx.moveTo(-size*0.18,-size*0.3); ctx.lineTo(-size*0.28,-size*0.6); ctx.lineTo(-size*0.05,-size*0.35); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(size*0.18,-size*0.3); ctx.lineTo(size*0.28,-size*0.6); ctx.lineTo(size*0.05,-size*0.35); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff5555';
+  ctx.beginPath(); ctx.arc(-size*0.1, -size*0.15, size*0.06, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(size*0.1, -size*0.15, size*0.06, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawHydra(en) {
+  const s = en.size;
+  ctx.save(); ctx.translate(en.x, en.y);
+  ctx.beginPath(); ctx.ellipse(0, s*0.8, s*1.1, s*0.35, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill();
+  // tělo
+  ctx.fillStyle = '#2a5a3a';
+  ctx.beginPath(); ctx.ellipse(0, s*0.25, s*0.9, s*0.65, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#1a3a24'; ctx.lineWidth = 3; ctx.stroke();
+  // tři krky s hlavami
+  const necks = [ {ang:-0.7, len:1.15}, {ang:0, len:1.35}, {ang:0.7, len:1.15} ];
+  for (let i = 0; i < necks.length; i++) {
+    const n = necks[i];
+    const sway = Math.sin(en.wobble*2 + i*2.1) * 0.18;
+    const a = n.ang + sway - Math.PI/2;
+    const hx = Math.cos(a) * s * n.len;
+    const hy = Math.sin(a) * s * n.len + s*0.1;
+    ctx.strokeStyle = '#2a5a3a'; ctx.lineWidth = s*0.3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, s*0.1);
+    ctx.quadraticCurveTo(hx*0.5, hy*0.5 - s*0.3, hx, hy);
+    ctx.stroke();
+    ctx.fillStyle = '#3a6a4a';
+    ctx.beginPath(); ctx.ellipse(hx, hy, s*0.3, s*0.24, a, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#1a3a24'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#ff3333';
+    ctx.beginPath(); ctx.arc(hx + Math.cos(a)*s*0.12, hy + Math.sin(a)*s*0.12 - s*0.06, s*0.05, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(hx + Math.cos(a)*s*0.12, hy + Math.sin(a)*s*0.12 + s*0.06, s*0.05, 0, Math.PI*2); ctx.fill();
+  }
+  // hřbetní pláty
+  ctx.fillStyle = '#1f4a2e';
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i*s*0.3 - s*0.1, s*0.05);
+    ctx.lineTo(i*s*0.3, -s*0.28);
+    ctx.lineTo(i*s*0.3 + s*0.1, s*0.05);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawEnemy(en) {
+  switch (en.type) {
+    case 'zombie': drawZombie(en.x, en.y, en.size); break;
+    case 'skeleton': drawSkeleton(en.x, en.y, en.size); break;
+    case 'witch': drawWitch(en.x, en.y, en.size); break;
+    case 'bat': drawBat(en.x, en.y, en.size, en.wobble); break;
+    case 'knight': drawKnight(en.x, en.y, en.size, '#5a5f66', '#8b1a1a', 'plume'); break;
+    case 'hydra': drawHydra(en); break;
+  }
+  const w = en.size*1.6;
+  ctx.fillStyle = '#222'; ctx.fillRect(en.x-w/2, en.y-en.size-14, w, 5);
+  ctx.fillStyle = en.type === 'hydra' ? '#9c27b0' : '#c62828';
+  ctx.fillRect(en.x-w/2, en.y-en.size-14, w*Math.max(0, en.hp/en.maxHp), 5);
+}
+function drawTreeTop(r) {
+  ctx.save(); ctx.translate(r.x, r.y);
+  const g = 0.3 + 0.7*r.growth;
+  ctx.beginPath(); ctx.ellipse(2*g, 4*g, 14*g, 10*g, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+  const shades = r.growth < 0.4 ? ['#3f7a48', '#4f9158', '#5fa668'] : ['#1f5c26', '#2e7d32', '#3f9142'];
+  for (const b of r.blobs) {
+    ctx.beginPath(); ctx.arc(b.dx*g, b.dy*g, b.r*g, 0, Math.PI*2);
+    ctx.fillStyle = shades[b.shade]; ctx.globalAlpha = 0.92; ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  if (r.growth >= 0.4) {
+    ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI*2); ctx.fillStyle = '#2b1a0a'; ctx.fill();
+  }
+  ctx.restore();
+}
+function drawRockShape(r) {
+  ctx.save(); ctx.translate(r.x, r.y);
+  ctx.beginPath(); ctx.ellipse(1, 5, 12, 5, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+  ctx.beginPath();
+  r.points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.closePath();
+  const grey = 120 + r.shade;
+  ctx.fillStyle = `rgb(${grey},${grey-6},${grey-10})`; ctx.fill();
+  ctx.strokeStyle = `rgb(${grey-45},${grey-45},${grey-45})`; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.restore();
+}
+function drawMine(m) {
+  ctx.save(); ctx.translate(m.x, m.y);
+  ctx.rotate(m.angle + Math.PI);
+  ctx.fillStyle = '#2a2420';
+  ctx.beginPath(); ctx.ellipse(0, 0, 16, 13, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#0a0808';
+  ctx.beginPath(); ctx.ellipse(0, 1, 10, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#6b4a2a';
+  ctx.fillRect(-13, -12, 5, 24); ctx.fillRect(8, -12, 5, 24); ctx.fillRect(-13, -12, 26, 5);
+  ctx.restore();
+}
+function drawWater(lake) {
+  ctx.save();
+  ctx.beginPath();
+  lake.points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.closePath();
+  ctx.fillStyle = '#2a6f97'; ctx.fill();
+  ctx.strokeStyle = '#1a4a66'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.beginPath(); ctx.ellipse(lake.x - lake.rApprox*0.2, lake.y - lake.rApprox*0.25, lake.rApprox*0.5, lake.rApprox*0.3, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawStream(s) {
+  ctx.save();
+  ctx.strokeStyle = '#2a6f97'; ctx.lineWidth = s.width; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.beginPath();
+  s.points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = s.width*0.35;
+  ctx.beginPath();
+  s.points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.stroke();
+  ctx.restore();
+}
+function drawBridge(b) {
+  ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.angle);
+  ctx.fillStyle = '#8a6a3a';
+  ctx.fillRect(-b.span/2, -16, b.span, 32);
+  ctx.strokeStyle = '#4a3319'; ctx.lineWidth = 2;
+  for (let i = -Math.floor(b.span/2); i < b.span/2; i += 10) {
+    ctx.beginPath(); ctx.moveTo(i, -16); ctx.lineTo(i, 16); ctx.stroke();
+  }
+  ctx.strokeRect(-b.span/2, -16, b.span, 32);
+  ctx.fillStyle = '#3a2a14';
+  ctx.fillRect(-b.span/2, -18, 5, 36); ctx.fillRect(b.span/2-5, -18, 5, 36);
+  ctx.restore();
+}
+function drawTunnel(t) {
+  ctx.save();
+  ctx.strokeStyle = '#4a3f38'; ctx.lineWidth = t.width; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(t.ax, t.ay); ctx.lineTo(t.bx, t.by); ctx.stroke();
+  ctx.strokeStyle = '#6b5a4a'; ctx.lineWidth = t.width*0.55;
+  ctx.beginPath(); ctx.moveTo(t.ax, t.ay); ctx.lineTo(t.bx, t.by); ctx.stroke();
+  ctx.fillStyle = '#0a0808';
+  ctx.beginPath(); ctx.ellipse(t.ax, t.ay, t.width*0.36, t.width*0.28, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(t.bx, t.by, t.width*0.36, t.width*0.28, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#2a2018'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.ellipse(t.ax, t.ay, t.width*0.36, t.width*0.28, 0, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(t.bx, t.by, t.width*0.36, t.width*0.28, 0, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+function drawMountain(m) {
+  ctx.save();
+  ctx.beginPath();
+  m.points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+  ctx.closePath();
+  ctx.fillStyle = `hsl(${30+m.hue}, 18%, 30%)`; ctx.fill();
+  ctx.strokeStyle = `hsl(${30+m.hue}, 16%, 18%)`; ctx.lineWidth = 2; ctx.stroke();
+  for (const pk of m.peaks) {
+    const bX = m.x + pk.dx, bY = m.y + pk.dy, tX = bX, tY = bY - pk.height;
+    ctx.beginPath();
+    ctx.moveTo(bX - pk.width/2, bY); ctx.lineTo(tX, tY); ctx.lineTo(bX + pk.width/2, bY);
+    ctx.closePath();
+    ctx.fillStyle = `hsl(${26+m.hue}, 22%, 40%)`; ctx.fill();
+    ctx.strokeStyle = `hsl(${26+m.hue}, 20%, 26%)`; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(tX, tY); ctx.lineTo(bX - pk.width/2, bY); ctx.lineTo(bX - pk.width*0.15, bY);
+    ctx.closePath();
+    ctx.fillStyle = `hsl(${26+m.hue}, 18%, 30%)`; ctx.globalAlpha = 0.55; ctx.fill(); ctx.globalAlpha = 1;
+    if (pk.snow) {
+      ctx.beginPath();
+      ctx.moveTo(tX - pk.width*0.2, tY + pk.height*0.3); ctx.lineTo(tX, tY); ctx.lineTo(tX + pk.width*0.2, tY + pk.height*0.3);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function drawPaths() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(150,120,80,0.35)';
+  ctx.lineWidth = 22; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const p of paths) {
+    ctx.beginPath();
+    p.forEach((pt,i)=>{ if(i===0) ctx.moveTo(pt.x,pt.y); else ctx.lineTo(pt.x,pt.y); });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawCastleWalls() {
+  for (const w of wallDefs) {
+    if (!w.built || w.hp <= 0) continue;
+    ctx.save();
+    ctx.strokeStyle = '#8a8a82'; ctx.lineWidth = 26; ctx.lineCap = 'square';
+    ctx.beginPath(); ctx.moveTo(w.ax, w.ay); ctx.lineTo(w.bx, w.by); ctx.stroke();
+    ctx.strokeStyle = '#5f5f57'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(w.ax, w.ay); ctx.lineTo(w.bx, w.by); ctx.stroke();
+    const mx = (w.ax+w.bx)/2, my = (w.ay+w.by)/2;
+    ctx.fillStyle = '#222'; ctx.fillRect(mx-20, my-30, 40, 4);
+    ctx.fillStyle = '#8bc34a'; ctx.fillRect(mx-20, my-30, 40*Math.max(0, w.hp/w.maxHp), 4);
+    ctx.restore();
+  }
+}
+function drawGate() {
+  ctx.save();
+  const gy = CASTLE.y+HALF, gx0 = CASTLE.x-GATE_W/2, gx1 = CASTLE.x+GATE_W/2;
+  ctx.fillStyle = '#7a7a70';
+  ctx.fillRect(gx0-14, gy-30, 20, 60);
+  ctx.fillRect(gx1-6, gy-30, 20, 60);
+  ctx.strokeStyle = '#3a3a34'; ctx.lineWidth = 2;
+  ctx.strokeRect(gx0-14, gy-30, 20, 60);
+  ctx.strokeRect(gx1-6, gy-30, 20, 60);
+  ctx.fillStyle = '#6b4a2a'; ctx.strokeStyle = '#3a2a14'; ctx.lineWidth = 2;
+  if (gateOpen) {
+    ctx.fillRect(gx0+8, gy-26, GATE_W*0.28, 52);
+    ctx.strokeRect(gx0+8, gy-26, GATE_W*0.28, 52);
+    ctx.fillRect(gx1-8-GATE_W*0.28, gy-26, GATE_W*0.28, 52);
+    ctx.strokeRect(gx1-8-GATE_W*0.28, gy-26, GATE_W*0.28, 52);
+  } else {
+    ctx.fillRect(gx0+8, gy-26, GATE_W/2-8, 52);
+    ctx.strokeRect(gx0+8, gy-26, GATE_W/2-8, 52);
+    ctx.fillRect(CASTLE.x, gy-26, GATE_W/2-8, 52);
+    ctx.strokeRect(CASTLE.x, gy-26, GATE_W/2-8, 52);
+  }
+  ctx.restore();
+}
+function drawTower(t) {
+  if (!t.built || t.hp <= 0) return;
+  ctx.save();
+  ctx.fillStyle = '#6b6b63';
+  ctx.fillRect(t.x-18, t.y-18, 36, 44);
+  ctx.strokeStyle = '#333'; ctx.strokeRect(t.x-18, t.y-18, 36, 44);
+  for (let i = -1; i <= 1; i += 2) ctx.fillRect(t.x + i*15 - 4, t.y-26, 8, 8);
+  ctx.fillRect(t.x-4, t.y-26, 8, 8);
+  ctx.fillStyle = '#b71c1c';
+  ctx.fillRect(t.x-1, t.y-42, 14, 9);
+  ctx.strokeStyle = '#222';
+  ctx.beginPath(); ctx.moveTo(t.x-1, t.y-42); ctx.lineTo(t.x-1, t.y-18); ctx.stroke();
+  ctx.fillStyle = '#222'; ctx.fillRect(t.x-20, t.y-52, 40, 4);
+  ctx.fillStyle = '#42a5f5'; ctx.fillRect(t.x-20, t.y-52, 40*Math.max(0, t.hp/t.maxHp), 4);
+  ctx.restore();
+}
+function drawProjectile(p) {
+  ctx.save();
+  ctx.fillStyle = p.friendly ? '#ffd54f' : '#ff8a65';
+  ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawKeep() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath(); ctx.ellipse(CASTLE.x+4, CASTLE.y+6, 40, 16, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#5a4a2a';
+  ctx.fillRect(CASTLE.x-32, CASTLE.y-70, 64, 90);
+  ctx.strokeStyle = '#2a1a0a'; ctx.lineWidth = 2;
+  ctx.strokeRect(CASTLE.x-32, CASTLE.y-70, 64, 90);
+  ctx.beginPath();
+  ctx.moveTo(CASTLE.x-38, CASTLE.y-70); ctx.lineTo(CASTLE.x, CASTLE.y-110); ctx.lineTo(CASTLE.x+38, CASTLE.y-70);
+  ctx.closePath();
+  ctx.fillStyle = '#7a3a2a'; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#2a1a0a';
+  ctx.fillRect(CASTLE.x-10, CASTLE.y+4, 20, 16);
+  ctx.fillStyle = '#b71c1c';
+  ctx.fillRect(CASTLE.x-1, CASTLE.y-128, 12, 18);
+  ctx.strokeStyle = '#222';
+  ctx.beginPath(); ctx.moveTo(CASTLE.x-1, CASTLE.y-128); ctx.lineTo(CASTLE.x-1, CASTLE.y-110); ctx.stroke();
+  ctx.fillStyle = '#eee'; ctx.font = '11px Segoe UI'; ctx.textAlign = 'center';
+  ctx.fillText('ÚTOČIŠTĚ', CASTLE.x, CASTLE.y-38);
+  ctx.restore();
+}
+function drawCampfire() {
+  const fx = CAMPFIRE.x, fy = CAMPFIRE.y;
+  ctx.save();
+  ctx.fillStyle = '#3a2a1a';
+  ctx.beginPath(); ctx.arc(fx, fy, 18, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(fx-13,fy+7); ctx.lineTo(fx+13,fy-7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(fx-13,fy-7); ctx.lineTo(fx+13,fy+7); ctx.stroke();
+  const flicker = Math.sin(fireTime*6)*3 + Math.sin(fireTime*3.3)*2;
+  ctx.fillStyle = 'rgba(255,140,0,0.25)';
+  ctx.beginPath(); ctx.arc(fx, fy-6, 36+flicker, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ff9800';
+  ctx.beginPath();
+  ctx.moveTo(fx, fy-28-flicker); ctx.quadraticCurveTo(fx+11, fy-9, fx+5, fy+2);
+  ctx.quadraticCurveTo(fx+2, fy-7, fx, fy+3);
+  ctx.quadraticCurveTo(fx-4, fy-9, fx-7, fy+2);
+  ctx.quadraticCurveTo(fx-9, fy-13, fx, fy-28-flicker);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffeb3b';
+  ctx.beginPath(); ctx.ellipse(fx, fy-4, 4, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawHelperBar(ent, color) {
+  const w = ent.size*2;
+  ctx.fillStyle = '#222'; ctx.fillRect(ent.x-w/2, ent.y-ent.size-20, w, 4);
+  ctx.fillStyle = color; ctx.fillRect(ent.x-w/2, ent.y-ent.size-20, w*Math.max(0, ent.hp/ent.maxHp), 4);
+}
+// ---------- Vesnice: vylepšená zvířata a lidé ----------
+function drawHouse(cx, cy, h) {
+  ctx.save();
+  ctx.fillStyle = '#7a5a3a';
+  ctx.fillRect(cx-h.w/2, cy-h.h/2, h.w, h.h);
+  ctx.strokeStyle = '#3a2a14'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(cx-h.w/2, cy-h.h/2, h.w, h.h);
+  ctx.beginPath();
+  ctx.moveTo(cx-h.w*0.6, cy-h.h/2); ctx.lineTo(cx, cy-h.h*1.1); ctx.lineTo(cx+h.w*0.6, cy-h.h/2);
+  ctx.closePath();
+  ctx.fillStyle = '#5a2a1a'; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#2a1a0a';
+  ctx.fillRect(cx-h.w*0.15, cy+h.h*0.1, h.w*0.3, h.h*0.4);
+  ctx.restore();
+}
+function drawPalisade(v) {
+  ctx.save();
+  for (let i = 0; i < 20; i++) {
+    const ang = (i/20)*Math.PI*2;
+    const px = v.x + Math.cos(ang)*v.radius, py = v.y + Math.sin(ang)*v.radius;
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(px-3, py-10, 6, 20);
+    ctx.strokeStyle = '#3a2a14'; ctx.lineWidth = 1;
+    ctx.strokeRect(px-3, py-10, 6, 20);
+  }
+  ctx.restore();
+}
+function drawChicken(a) {
+  if (a.hp <= 0) return;
+  ctx.save(); ctx.translate(a.x, a.y);
+  const step = Math.sin(a.legPhase)*1.5;
+  // nožky
+  ctx.strokeStyle = '#e0a020'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-2, 4); ctx.lineTo(-2+step, 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(2, 4); ctx.lineTo(2-step, 8); ctx.stroke();
+  // tělo
+  ctx.fillStyle = '#f0e0c0';
+  ctx.beginPath(); ctx.ellipse(0, 0, 6.5, 5, 0, 0, Math.PI*2); ctx.fill();
+  // křídlo
+  ctx.fillStyle = '#e0cba5';
+  ctx.beginPath(); ctx.ellipse(-1, 0.5, 3.5, 2.5, 0.3, 0, Math.PI*2); ctx.fill();
+  // ocásek
+  ctx.fillStyle = '#d8c8a8';
+  ctx.beginPath(); ctx.moveTo(-6,-1); ctx.lineTo(-10,-5); ctx.lineTo(-5,-3); ctx.closePath(); ctx.fill();
+  // hlava, hřebínek, zobák
+  ctx.fillStyle = '#f0e0c0';
+  ctx.beginPath(); ctx.arc(5.5, -3.5, 3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#d02020';
+  ctx.beginPath(); ctx.arc(5.5, -6.4, 1.4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#e0a020';
+  ctx.beginPath(); ctx.moveTo(8.2,-3.7); ctx.lineTo(11,-3); ctx.lineTo(8.2,-2.3); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(6.2, -4, 0.7, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawCow(a) {
+  if (a.hp <= 0) return;
+  ctx.save(); ctx.translate(a.x, a.y);
+  const step = Math.sin(a.legPhase)*2;
+  // nohy
+  ctx.strokeStyle = '#e8e8e0'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-8, 6); ctx.lineTo(-8+step, 12); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-3, 6); ctx.lineTo(-3-step, 12); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4, 6); ctx.lineTo(4+step, 12); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(9, 6); ctx.lineTo(9-step, 12); ctx.stroke();
+  // tělo se skvrnami
+  ctx.fillStyle = '#f5f5f0';
+  ctx.beginPath(); ctx.ellipse(0, 0, 15, 9, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#d8d8d0'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#2a2a2a';
+  ctx.beginPath(); ctx.ellipse(-5, -3, 5, 3.5, 0.4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(5, 3, 4, 2.6, -0.3, 0, Math.PI*2); ctx.fill();
+  // ocas
+  ctx.strokeStyle = '#e8e8e0'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-14, -2); ctx.quadraticCurveTo(-19, 2, -17, 8); ctx.stroke();
+  ctx.fillStyle = '#3a3a3a';
+  ctx.beginPath(); ctx.arc(-17, 9, 2, 0, Math.PI*2); ctx.fill();
+  // hlava s ušima a rohy
+  ctx.fillStyle = '#f5f5f0';
+  ctx.beginPath(); ctx.ellipse(13.5, -2, 5.5, 4.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#e8c8c8';
+  ctx.beginPath(); ctx.ellipse(15.5, 0, 2.6, 1.8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#f0e8e0';
+  ctx.beginPath(); ctx.ellipse(10.5, -6, 2.2, 1.2, 0.6, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(16.5, -6, 2.2, 1.2, -0.6, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#c9b896'; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(11,-7); ctx.quadraticCurveTo(10,-10, 12,-10.5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(16,-7); ctx.quadraticCurveTo(17,-10, 15,-10.5); ctx.stroke();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(13, -3.5, 0.9, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawDog(d) {
+  if (d.hp <= 0) return;
+  ctx.save(); ctx.translate(d.x, d.y);
+  const step = Math.sin(d.legPhase)*1.6;
+  ctx.strokeStyle = '#7a4a20'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-5, 3); ctx.lineTo(-5+step, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-1, 3); ctx.lineTo(-1-step, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4, 3); ctx.lineTo(4+step, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7, 3); ctx.lineTo(7-step, 7); ctx.stroke();
+  ctx.fillStyle = '#8a5a2a';
+  ctx.beginPath(); ctx.ellipse(0, 0, 9.5, 5, 0, 0, Math.PI*2); ctx.fill();
+  // ocas nahoru
+  ctx.strokeStyle = '#8a5a2a'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-9, -2); ctx.quadraticCurveTo(-13, -7, -11, -9); ctx.stroke();
+  // hlava s čumákem a ušima
+  ctx.fillStyle = '#8a5a2a';
+  ctx.beginPath(); ctx.ellipse(9.5, -2.5, 4.5, 3.8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#6a4218';
+  ctx.beginPath(); ctx.ellipse(12.5, -1.4, 2.4, 1.6, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(14, -1.4, 0.9, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(9.5, -3.6, 0.8, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#5a3a1a';
+  ctx.beginPath(); ctx.moveTo(6.5,-5); ctx.lineTo(5,-9); ctx.lineTo(8.5,-6); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(10.5,-5.5); ctx.lineTo(11.5,-9); ctx.lineTo(12.8,-5.6); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function drawVillager(x, y, size, shirt, pants, weapon) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.beginPath(); ctx.ellipse(0, size*0.85, size*0.55, size*0.18, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fill();
+  ctx.strokeStyle = pants; ctx.lineWidth = size*0.22; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-size*0.15, size*0.2); ctx.lineTo(-size*0.2, size*0.7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(size*0.15, size*0.2); ctx.lineTo(size*0.2, size*0.7); ctx.stroke();
+  ctx.fillStyle = shirt;
+  ctx.beginPath();
+  ctx.moveTo(-size*0.36, size*0.35); ctx.lineTo(-size*0.28, -size*0.3);
+  ctx.lineTo(size*0.28, -size*0.3); ctx.lineTo(size*0.36, size*0.35);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#e0b088';
+  ctx.beginPath(); ctx.arc(0, -size*0.5, size*0.27, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#5a3a1a';
+  ctx.beginPath(); ctx.arc(0, -size*0.56, size*0.27, Math.PI, Math.PI*2); ctx.fill();
+  if (weapon === 'spear') {
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(size*0.35, size*0.55); ctx.lineTo(size*0.5, -size*0.95); ctx.stroke();
+    ctx.fillStyle = '#999';
+    ctx.beginPath(); ctx.moveTo(size*0.44,-size*0.9); ctx.lineTo(size*0.5,-size*1.2); ctx.lineTo(size*0.57,-size*0.9); ctx.closePath(); ctx.fill();
+  } else if (weapon === 'bow') {
+    ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(size*0.5, -size*0.1, size*0.5, -Math.PI*0.4, Math.PI*0.4); ctx.stroke();
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(size*0.5 + Math.cos(-Math.PI*0.4)*size*0.5, -size*0.1 + Math.sin(-Math.PI*0.4)*size*0.5);
+    ctx.lineTo(size*0.5 + Math.cos(Math.PI*0.4)*size*0.5, -size*0.1 + Math.sin(Math.PI*0.4)*size*0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawVillages() {
+  for (const v of villages) {
+    drawPalisade(v);
+    for (const h of v.houses) drawHouse(v.x+h.dx, v.y+h.dy, h);
+    for (const a of v.animals) { if (a.type === 'chicken') drawChicken(a); else drawCow(a); }
+    for (const p of v.people) drawVillager(p.x, p.y, 14, p.shirt, p.pants, null);
+    for (const c of v.children) drawVillager(c.x, c.y, 8, '#c9a86a', '#7a5a3a', null);
+    drawDog(v.dog);
+    for (const d of v.defenders) {
+      if (d.hp <= 0) continue;
+      drawVillager(d.x, d.y, d.size, '#5a6b3a', '#3a2a1a', d.kind === 'archer' ? 'bow' : 'spear');
+      const w = d.size*1.8;
+      ctx.fillStyle = '#222'; ctx.fillRect(d.x-w/2, d.y-d.size-20, w, 3);
+      ctx.fillStyle = '#8bc34a'; ctx.fillRect(d.x-w/2, d.y-d.size-20, w*Math.max(0, d.hp/d.maxHp), 3);
+    }
+  }
+}
+function drawWolf(wf) {
+  if (wf.hp <= 0) return;
+  ctx.save(); ctx.translate(wf.x, wf.y);
+  const step = Math.sin(wf.legPhase)*2;
+  ctx.strokeStyle = '#3a3a3a'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-7, 4); ctx.lineTo(-7+step, 9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-3, 4); ctx.lineTo(-3-step, 9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4, 4); ctx.lineTo(4+step, 9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(8, 4); ctx.lineTo(8-step, 9); ctx.stroke();
+  ctx.fillStyle = '#4a4a4a';
+  ctx.beginPath(); ctx.ellipse(0, 0, wf.size*0.9, wf.size*0.5, 0, 0, Math.PI*2); ctx.fill();
+  // huňatý ocas
+  ctx.strokeStyle = '#3f3f3f'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-wf.size*0.85, -2); ctx.quadraticCurveTo(-wf.size*1.35, -4, -wf.size*1.5, 3); ctx.stroke();
+  // hlava se špičatým čumákem
+  ctx.fillStyle = '#4a4a4a';
+  ctx.beginPath(); ctx.ellipse(wf.size*0.85, -wf.size*0.2, wf.size*0.42, wf.size*0.34, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#3a3a3a';
+  ctx.beginPath();
+  ctx.moveTo(wf.size*1.1, -wf.size*0.25);
+  ctx.lineTo(wf.size*1.45, -wf.size*0.12);
+  ctx.lineTo(wf.size*1.1, -wf.size*0.02);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(wf.size*1.42, -wf.size*0.12, 1.5, 0, Math.PI*2); ctx.fill();
+  // uši
+  ctx.fillStyle = '#2a2a2a';
+  ctx.beginPath(); ctx.moveTo(wf.size*0.6,-wf.size*0.45); ctx.lineTo(wf.size*0.5,-wf.size*0.85); ctx.lineTo(wf.size*0.78,-wf.size*0.5); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(wf.size*0.9,-wf.size*0.5); ctx.lineTo(wf.size*0.95,-wf.size*0.88); ctx.lineTo(wf.size*1.1,-wf.size*0.45); ctx.closePath(); ctx.fill();
+  // oko
+  ctx.fillStyle = '#ffcc00';
+  ctx.beginPath(); ctx.arc(wf.size*0.9, -wf.size*0.3, 1.8, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  const w = wf.size*1.6;
+  ctx.fillStyle = '#222'; ctx.fillRect(wf.x-w/2, wf.y-wf.size-10, w, 3);
+  ctx.fillStyle = '#c62828'; ctx.fillRect(wf.x-w/2, wf.y-wf.size-10, w*Math.max(0, wf.hp/wf.maxHp), 3);
+}
+function drawWeatherFX() {
+  if (weather.rain.length > 0) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(160,200,255,0.5)'; ctx.lineWidth = 1.6;
+    for (const r of weather.rain) {
+      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - (weather.type==='storm'?6:2), r.y + 14); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  if (weather.type === 'storm' && weather.tornado) {
+    const t = weather.tornado;
+    ctx.save(); ctx.translate(t.x, t.y);
+    for (let i = 0; i < 6; i++) {
+      const w2 = 12 + i*11, yy = -i*20;
+      ctx.strokeStyle = `rgba(140,140,150,${0.55 - i*0.07})`;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.ellipse(Math.sin(fireTime*4 + i)*6, yy, w2, w2*0.32, 0, 0, Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  if (weather.flashTimer > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${weather.flashTimer*2.2})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (weather.type === 'fog') {
+    ctx.fillStyle = 'rgba(190,195,200,0.42)';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = phase === 'day' ? '#1a2e1a' : '#0a0f1a';
+  ctx.fillRect(0, 0, W, H);
+
+  drawPaths();
+  for (const m of mountains) drawMountain(m);
+  for (const t of tunnels) drawTunnel(t);
+  for (const w of waters) drawWater(w);
+  for (const s of streams) drawStream(s);
+  drawVillages();
+  for (const b of bridges) drawBridge(b);
+  for (const r of resources) {
+    if (r.type === 'tree') drawTreeTop(r);
+    else if (r.type === 'mine') drawMine(r);
+    else drawRockShape(r);
+  }
+  drawCastleWalls();
+  drawGate();
+  for (const t of towerDefs) drawTower(t);
+  drawKeep();
+  drawCampfire();
+  for (const p of projectiles) drawProjectile(p);
+  for (const en of enemies) drawEnemy(en);
+  for (const wf of wolves) drawWolf(wf);
+
+  if (queen.alive && !queen.sheltering) { drawKnight(queen.x, queen.y, queen.size, '#7a2a6a', '#ffd54f', 'crown'); drawHelperBar(queen, '#e91e8c'); }
+  if (guards[0].alive && !guards[0].sheltering) { drawKnight(guards[0].x, guards[0].y, guards[0].size, '#5a5a4a', '#c0c0c0', 'plume'); drawHelperBar(guards[0], '#8bc34a'); }
+  if (guards[1].alive && !guards[1].sheltering) { drawKnight(guards[1].x, guards[1].y, guards[1].size, '#4a4a5a', '#c0c0c0', 'plume'); drawHelperBar(guards[1], '#8bc34a'); }
+  for (const s of army) { drawKnight(s.x, s.y, s.size, '#6a5a2a', '#d4af37', 'plume'); drawHelperBar(s, '#ffb300'); }
+  drawKnight(player.x, player.y, player.size, '#3a5a8a', '#d4af37', 'plume');
+
+  if (phase === 'night') {
+    ctx.fillStyle = 'rgba(0,0,10,0.35)';
+    ctx.fillRect(0, 0, W, H);
+  }
+  drawWeatherFX();
+}
+
+// ==================== HUDBA ====================
+let audioCtx = null, dayGain = null, nightGain = null, masterGain = null, weatherGain = null;
+let dayNoteTimer = 2, nightNoteTimer = 3, chordTimer = 0, chordIndex = 0, dayOscs = [], weatherNoiseGain = null;
+const CHORDS = [
+  { freqs: [261.63, 329.63, 392.0, 493.88], scale: [523.25, 587.33, 659.25, 783.99, 880.0] },       // Cmaj7
+  { freqs: [220.0, 261.63, 329.63, 392.0],  scale: [440.0, 523.25, 587.33, 659.25, 783.99] },       // Am7
+  { freqs: [174.61, 220.0, 261.63, 349.23], scale: [523.25, 587.33, 698.46, 880.0, 1046.5] },       // Fmaj
+  { freqs: [196.0, 246.94, 293.66, 392.0],  scale: [493.88, 587.33, 659.25, 783.99, 987.77] }       // G
+];
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain(); masterGain.gain.value = 0.35; masterGain.connect(audioCtx.destination);
+  dayGain = audioCtx.createGain(); dayGain.gain.value = 0.0001; dayGain.connect(masterGain);
+  nightGain = audioCtx.createGain(); nightGain.gain.value = 0.0001; nightGain.connect(masterGain);
+  weatherGain = audioCtx.createGain(); weatherGain.gain.value = 0.0001; weatherGain.connect(masterGain);
+
+  for (const f of CHORDS[0].freqs) {
+    const osc = audioCtx.createOscillator(); osc.type = 'sine'; osc.frequency.value = f;
+    const g = audioCtx.createGain(); g.gain.value = 0.04;
+    osc.connect(g); g.connect(dayGain); osc.start();
+    dayOscs.push(osc);
+  }
+
+  const nOsc = audioCtx.createOscillator(); nOsc.type = 'sawtooth'; nOsc.frequency.value = 55;
+  const nF = audioCtx.createBiquadFilter(); nF.type = 'lowpass'; nF.frequency.value = 200;
+  const nG = audioCtx.createGain(); nG.gain.value = 0.16;
+  nOsc.connect(nF); nF.connect(nG); nG.connect(nightGain); nOsc.start();
+  const lfo = audioCtx.createOscillator(); lfo.frequency.value = 0.13;
+  const lfoG = audioCtx.createGain(); lfoG.gain.value = 0.07;
+  lfo.connect(lfoG); lfoG.connect(nG.gain); lfo.start();
+
+  const bufLen = audioCtx.sampleRate*2;
+  const buf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random()*2 - 1;
+  const noise1 = audioCtx.createBufferSource(); noise1.buffer = buf; noise1.loop = true;
+  const nf1 = audioCtx.createBiquadFilter(); nf1.type = 'bandpass'; nf1.frequency.value = 350; nf1.Q.value = 0.6;
+  const ng1 = audioCtx.createGain(); ng1.gain.value = 0.025;
+  noise1.connect(nf1); nf1.connect(ng1); ng1.connect(nightGain); noise1.start();
+
+  // vítr počasí
+  const noise2 = audioCtx.createBufferSource(); noise2.buffer = buf; noise2.loop = true;
+  const nf2 = audioCtx.createBiquadFilter(); nf2.type = 'bandpass'; nf2.frequency.value = 500; nf2.Q.value = 0.4;
+  weatherNoiseGain = audioCtx.createGain(); weatherNoiseGain.gain.value = 0.14;
+  noise2.connect(nf2); nf2.connect(weatherNoiseGain); weatherNoiseGain.connect(weatherGain); noise2.start();
+}
+function playDayNote() {
+  const scale = CHORDS[chordIndex].scale;
+  const f = scale[Math.floor(rand(0, scale.length))];
+  const type = Math.random() < 0.3 ? 'sine' : 'triangle';
+  const osc = audioCtx.createOscillator(); osc.type = type; osc.frequency.value = f;
+  const g = audioCtx.createGain();
+  osc.connect(g); g.connect(dayGain);
+  const t = audioCtx.currentTime;
+  const dur = rand(1.2, 2.6);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(rand(0.07, 0.13), t + 0.06);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.start(t); osc.stop(t + dur + 0.1);
+  // občas druhý tón v harmonii
+  if (Math.random() < 0.35) {
+    const f2 = scale[Math.floor(rand(0, scale.length))] / 2;
+    const o2 = audioCtx.createOscillator(); o2.type = 'sine'; o2.frequency.value = f2;
+    const g2 = audioCtx.createGain();
+    o2.connect(g2); g2.connect(dayGain);
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.linearRampToValueAtTime(0.06, t + 0.1);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.5);
+    o2.start(t); o2.stop(t + dur + 0.7);
+  }
+}
+function playNightSting() {
+  const pairs = [[233.08, 246.94], [207.65, 220.0], [174.61, 185.0]];
+  const pair = pairs[Math.floor(rand(0, pairs.length))];
+  for (const f of pair) {
+    const osc = audioCtx.createOscillator(); osc.type = 'sine'; osc.frequency.value = f;
+    const g = audioCtx.createGain();
+    osc.connect(g); g.connect(nightGain);
+    const t = audioCtx.currentTime;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.08, t + 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.5);
+    osc.start(t); osc.stop(t + 3.6);
+  }
+}
+function playThunder() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 42;
+  const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 110;
+  const g = audioCtx.createGain();
+  osc.connect(f); f.connect(g); g.connect(masterGain);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(0.4, t + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + rand(1.2, 2.2));
+  osc.start(t); osc.stop(t + 2.5);
+}
+function updateMusic(dtSec) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const now = audioCtx.currentTime;
+  dayGain.gain.setTargetAtTime(phase === 'day' ? 0.9 : 0.0001, now, 1.5);
+  nightGain.gain.setTargetAtTime(phase === 'night' ? 0.9 : 0.0001, now, 1.5);
+  const windy = weather.type === 'storm' ? 1.0 : (weather.type === 'rain' ? 0.4 : 0.0001);
+  weatherGain.gain.setTargetAtTime(windy, now, 2.0);
+
+  if (phase === 'day') {
+    chordTimer -= dtSec;
+    if (chordTimer <= 0) {
+      chordTimer = rand(6, 10);
+      chordIndex = (chordIndex + (Math.random() < 0.7 ? 1 : 2)) % CHORDS.length;
+      const chord = CHORDS[chordIndex].freqs;
+      for (let i = 0; i < dayOscs.length; i++) {
+        dayOscs[i].frequency.setTargetAtTime(chord[i % chord.length], now, 0.8);
+      }
+    }
+    dayNoteTimer -= dtSec;
+    if (dayNoteTimer <= 0) { dayNoteTimer = rand(0.9, 2.4); playDayNote(); }
+  } else {
+    nightNoteTimer -= dtSec;
+    if (nightNoteTimer <= 0) { nightNoteTimer = rand(2.5, 5.5); playNightSting(); }
+  }
+}
+function toggleMusic() {
+  const btn = document.getElementById('musicBtn');
+  if (!audioCtx) { initAudio(); btn.textContent = '🔈 Ztlumit'; return; }
+  if (audioCtx.state === 'suspended') { audioCtx.resume(); btn.textContent = '🔈 Ztlumit'; }
+  else { audioCtx.suspend(); btn.textContent = '🔊 Hudba'; }
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dtReal = Math.min((now - lastTime)/1000, 0.1);
+  lastTime = now;
+  update(dtReal * 60 * 0.25);
+  updateMusic(dtReal);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
